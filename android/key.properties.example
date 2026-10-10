@@ -1,0 +1,9 @@
+# Шаблон локальных настроек подписи release-сборок Domiday.
+# Скопируйте в android/key.properties (этот файл исключён из Git) и заполните.
+# Ключ хранится ВНЕ проекта; путь абсолютный или относительно папки android/.
+# Не коммитьте key.properties, пароли и сам keystore.
+storeFile=/абсолютный/путь/к/domiday-prototype.keystore
+storeType=PKCS12
+keyAlias=
+storePassword=
+keyPassword=

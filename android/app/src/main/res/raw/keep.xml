@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Иконка уведомления указывается по имени из Dart-кода; сжатие ресурсов
+     release-сборки её не видит и вырезало — без иконки уведомление
+     не показывается. -->
+<resources xmlns:tools="http://schemas.android.com/tools"
+    tools:keep="@drawable/ic_notification" />
