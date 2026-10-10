@@ -89,6 +89,8 @@ release build, create your own keystore and `key.properties`.
 - `assets/` — country borders, country names, flags, fonts.
 - `test/` — unit, widget and golden tests.
 - `tool/` — scripts that generate borders, flags, icons and the demo journal.
+- `fastlane/metadata/android/` — store descriptions, icon and screenshots
+  (used by F-Droid-compatible catalogues such as IzzyOnDroid).
 - `demo/domiday-demo-backup.json` — a fictional journal you can restore in the
   app to look around.
 - `CLAUDE.md`, `HANDOFF.md`, `START-HERE.md`, `README.ru.md` — the working

@@ -1,0 +1,5 @@
+- A clear "Country detection is off" card with a Turn on button.
+- A reminder on Today that days count on their own.
+- Timeline import starts with a step-by-step guide and shows only JSON files.
+- Your own countries come first in the country list, with flags.
+- The map explains itself in one line.
