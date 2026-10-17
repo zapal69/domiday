@@ -1,0 +1,4865 @@
+part of 'main.dart';
+
+String _newId() => '${DateTime.now().microsecondsSinceEpoch}-${_idCounter++}';
+int _idCounter = 0;
+
+class HomePage extends StatefulWidget {
+  final TripRepository repository;
+  final CountryDirectory directory;
+  final CountryBorders borders;
+
+  /// null — определение недоступно (кнопка не показывается).
+  final LocationSource? location;
+  final Day Function() today;
+  final DateTime Function() now;
+
+  /// Счётчик запросов «открыть экран подтверждения» (нажатие на
+  /// уведомление фоновой проверки).
+  final ValueNotifier<int>? reviewRequests;
+  const HomePage({
+    super.key,
+    required this.repository,
+    required this.directory,
+    required this.borders,
+    this.location,
+    required this.today,
+    required this.now,
+    this.reviewRequests,
+  });
+  @override
+  State<HomePage> createState() => _HomePageState();
+}
+
+class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
+  /// Контуры карты строятся один раз из тех же границ, что и определение
+  /// страны; без границ (тесты без геолокации) карты нет.
+  WorldMapData? _mapData;
+  WorldMapData? get _map {
+    if (widget.borders.count == 0) return null;
+    return _mapData ??= WorldMapData.build(widget.borders);
+  }
+
+  late final JournalController _controller;
+  late Day _day;
+  late int _year;
+
+  /// Фильтр календаря по стране (ключ страны), null — все.
+  String? _calendarCountry;
+  Timer? _timer;
+  bool _detecting = false;
+
+  /// Итог последней автопроверки за этот запуск — строка под карточкой.
+  DetectOutcome? _autoOutcome;
+  DateTime? _autoAt;
+
+  /// Владелец ушёл в системные настройки из карточки «Определение
+  /// выключено»: по возвращении проверить сразу, без часового интервала.
+  bool _recheckOnResume = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _day = widget.today();
+    _year = _day.year;
+    _controller = JournalController(
+      widget.repository,
+      widget.today,
+      match: widget.directory.match,
+    );
+    _controller.addListener(_changed);
+    WidgetsBinding.instance.addObserver(this);
+    _timer = Timer.periodic(const Duration(seconds: 30), (_) => _refresh());
+    _controller.load().then((_) async {
+      await _finishBackgroundRequest();
+      await _autoCheck();
+      if (mounted && (widget.reviewRequests?.value ?? 0) > 0) _openPending();
+    });
+    widget.reviewRequests?.addListener(_openPending);
+  }
+
+  /// Довести включение фоновой проверки, если владелец ушёл в настройки
+  /// Android за разрешением: система перезапускает приложение при смене
+  /// разрешений, и намерение хранится в settings.json.
+  Future<void> _finishBackgroundRequest() async {
+    final service = context
+        .findAncestorWidgetOfExactType<BackgroundScope>()
+        ?.service;
+    final settings = context
+        .findAncestorWidgetOfExactType<SettingsScope>()
+        ?.notifier;
+    if (service == null || settings == null) return;
+    await settings.ready;
+    if (!mounted) return;
+    final s = settings.settings;
+    if (!s.backgroundRequested || s.backgroundDetect) return;
+    if (!await finishBackgroundEnable(service, settings) || !mounted) return;
+  }
+
+  /// Открыть экран подтверждения для ожидающего кандидата (по уведомлению).
+  Future<void> _openPending() async {
+    if (!mounted || _controller.loading || _controller.loadFailed) return;
+    final settings = context
+        .findAncestorWidgetOfExactType<SettingsScope>()
+        ?.notifier;
+    if (settings == null) return;
+    await settings.ready;
+    final candidate = settings.candidate;
+    if (candidate == null || candidate.dismissed || !mounted) return;
+    await _review(candidate);
+  }
+
+  /// Автопроверка при открытии: только если включена в настройках,
+  /// разрешение уже дано, прошёл час с прошлой проверки и профиль есть
+  /// ([force] — без часового интервала). Никаких диалогов — результат
+  /// виден баннером кандидата или карточкой «Определение выключено».
+  Future<void> _autoCheck({bool force = false}) async {
+    final location = widget.location;
+    if (location == null || !mounted || _detecting) return;
+    if (_controller.loading ||
+        _controller.loadFailed ||
+        _controller.snapshot.needsOnboarding) {
+      return;
+    }
+    final settings = context
+        .findAncestorWidgetOfExactType<SettingsScope>()
+        ?.notifier;
+    if (settings == null) return;
+    // Настройки могут читаться дольше дневника: без них — умолчания.
+    await settings.ready;
+    if (!mounted) return;
+    final currentKey = _controller.snapshot.current?.countryKey;
+    if (!settings.settings.autoDetect) return;
+    if (!force && !settings.autoCheckDue(widget.now(), currentKey)) return;
+    await settings.markAutoCheck(widget.now(), currentKey);
+    if (!mounted) return;
+    final result = await detectCountry(
+      context: context,
+      location: location,
+      borders: widget.borders,
+      journal: _controller,
+      settings: settings,
+      today: _day,
+      review: (_) async {},
+      silent: true,
+    );
+    if (mounted) {
+      setState(() {
+        _autoOutcome = result.outcome;
+        _autoAt = widget.now();
+      });
+    }
+  }
+
+  String _autoStatusText(AppLocalizations l10n) {
+    final at = _autoAt!;
+    final time =
+        '${at.hour.toString().padLeft(2, '0')}:${at.minute.toString().padLeft(2, '0')}';
+    final result = switch (_autoOutcome!) {
+      DetectOutcome.same => l10n.autoStatusSame,
+      DetectOutcome.pending => l10n.autoStatusPending,
+      DetectOutcome.denied => l10n.autoStatusDenied,
+      DetectOutcome.serviceOff => l10n.autoStatusOff,
+      DetectOutcome.failed => l10n.autoStatusFailed,
+      DetectOutcome.none => l10n.autoStatusNone,
+      DetectOutcome.silenced => l10n.autoStatusSilenced,
+    };
+    return l10n.autoStatus(time, result);
+  }
+
+  void _changed() {
+    if (mounted) setState(() {});
+  }
+
+  void _refresh() {
+    final now = widget.today();
+    if (now != _day) {
+      if (_year == _day.year || _year > now.year) _year = now.year;
+      _day = now;
+      _controller.refresh();
+    }
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      _refresh();
+      _finishBackgroundRequest();
+      final force = _recheckOnResume;
+      _recheckOnResume = false;
+      _autoCheck(force: force);
+    }
+  }
+
+  @override
+  void dispose() {
+    widget.reviewRequests?.removeListener(_openPending);
+    _timer?.cancel();
+    WidgetsBinding.instance.removeObserver(this);
+    _controller.removeListener(_changed);
+    _controller.dispose();
+    super.dispose();
+  }
+
+  /// Вкладки: «Сегодня», «Календарь», «Карта» (если есть границы),
+  /// «Журнал». Строятся при первом открытии и дальше живут в IndexedStack,
+  /// чтобы прокрутка и зум сохранялись между переключениями.
+  static const _today = 0, _calendar = 1, _mapTab = 2, _journalTab = 3;
+  int _tab = _today;
+  final _built = {_today};
+
+  void _goTab(int tab) {
+    if (tab == _tab) return;
+    setState(() {
+      _tab = tab;
+      _built.add(tab);
+    });
+  }
+
+  void _journal() => _goTab(_journalTab);
+
+  /// Карточки планов на «Сегодня»: план на сегодня («Вы там?»), план с
+  /// прошедшими датами и ближайшая будущая поездка.
+  List<Widget> _planCards(BuildContext context, JournalSnapshot snapshot) {
+    final l10n = context.l10n;
+    final plans = [...snapshot.plans]
+      ..sort((a, b) => a.arrival.compareTo(b.arrival));
+    final arrived = plans
+        .where(
+          (p) =>
+              p.arrival.compareTo(_day) <= 0 &&
+              p.departure.compareTo(_day) >= 0,
+        )
+        .firstOrNull;
+    final overdue = plans
+        .where((p) => p.departure.compareTo(_day) < 0)
+        .firstOrNull;
+    final next = plans.where((p) => p.arrival.compareTo(_day) > 0).firstOrNull;
+    String place(Trip p) => [
+      countryName(context, p.countryCode, p.country),
+      if (p.city.trim().isNotEmpty) p.city.trim(),
+    ].join(', ');
+    return [
+      if (arrived != null) ...[
+        const SizedBox(height: 10),
+        Card(
+          key: const Key('planArrived'),
+          clipBehavior: Clip.antiAlias,
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(16, 14, 16, 12),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  l10n.planArrivedTitle(place(arrived)),
+                  style: const TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+                const SizedBox(height: 10),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: [
+                    FilledButton(
+                      key: const Key('planYes'),
+                      onPressed: () => _confirmPlan(arrived),
+                      child: Text(l10n.planYes),
+                    ),
+                    OutlinedButton(
+                      key: const Key('planNo'),
+                      onPressed: () =>
+                          openPlanEditor(context, _controller, plan: arrived),
+                      child: Text(l10n.planNo),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ),
+      ],
+      if (overdue != null) ...[
+        const SizedBox(height: 10),
+        Card(
+          key: const Key('planOverdue'),
+          clipBehavior: Clip.antiAlias,
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(16, 14, 16, 12),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  l10n.planOverdueTitle(place(overdue)),
+                  style: const TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(l10n.planOverdueBody),
+                const SizedBox(height: 10),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: [
+                    FilledButton.tonal(
+                      key: const Key('planAddAsTrip'),
+                      onPressed: () =>
+                          addPlanAsTrip(context, _controller, overdue),
+                      child: Text(l10n.planAddAsTrip),
+                    ),
+                    OutlinedButton(
+                      key: const Key('planEditOverdue'),
+                      onPressed: () =>
+                          openPlanEditor(context, _controller, plan: overdue),
+                      child: Text(l10n.planYour),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ),
+      ],
+      if (next != null) ...[
+        const SizedBox(height: 24),
+        _SectionHeader(title: l10n.nextTrip),
+        const SizedBox(height: 12),
+        Card(
+          key: const Key('nextTrip'),
+          clipBehavior: Clip.antiAlias,
+          child: PlanRow(
+            plan: next,
+            today: _day,
+            divider: false,
+            onTap: () => openPlanEditor(context, _controller, plan: next),
+          ),
+        ),
+      ],
+    ];
+  }
+
+  /// «Да, я там»: смена текущей страны через обычный редактор статуса с
+  /// подстановкой страны и даты из плана; после успешной записи план
+  /// удаляется. Если текущая страна уже та же — просто убираем план.
+  Future<void> _confirmPlan(Trip plan) async {
+    final snapshot = _controller.snapshot;
+    final same = snapshot.current?.countryKey == plan.countryKey;
+    final saved =
+        same || await _changeFromCandidate(plan.country, plan.arrival);
+    if (!saved || !mounted) return;
+    final now = _controller.snapshot;
+    await _controller.commit(
+      now.copyWith(plans: now.plans.where((p) => p.id != plan.id)),
+    );
+  }
+
+  void _openReview(int year) {
+    final snapshot = _controller.snapshot;
+    final summary = YearSummary(snapshot, year, _day);
+    final calendarData = YearCalendarData(summary, _day, snapshot: snapshot);
+    Navigator.push<void>(
+      context,
+      MaterialPageRoute(
+        builder: (_) => YearReviewPage(
+          controller: _controller,
+          year: year,
+          slots: calendarData.slots,
+          map: _map,
+        ),
+      ),
+    );
+  }
+
+  /// Фильтр календаря: лист стран года (и «Все страны»).
+  Future<void> _chooseCalendarCountry(YearSummary summary) async {
+    final l10n = context.l10n;
+    final picked = await showModalBottomSheet<String>(
+      context: context,
+      showDragHandle: true,
+      builder: (sheet) => SafeArea(
+        child: ListView(
+          shrinkWrap: true,
+          children: [
+            ListTile(
+              key: const Key('calendarCountry-all'),
+              title: Text(l10n.allCountries),
+              selected: _calendarCountry == null,
+              onTap: () => Navigator.pop(sheet, ''),
+            ),
+            for (final c in summary.countries)
+              ListTile(
+                key: Key('calendarCountry-${c.key}'),
+                leading: c.code == null
+                    ? null
+                    : CountryFlag(code: c.code, width: 28),
+                title: Text(countryName(context, c.code, c.label)),
+                subtitle: Text(l10n.daysFull(c.days)),
+                selected: _calendarCountry == c.key,
+                onTap: () => Navigator.pop(sheet, c.key),
+              ),
+          ],
+        ),
+      ),
+    );
+    if (picked == null || !mounted) return;
+    setState(() => _calendarCountry = picked.isEmpty ? null : picked);
+  }
+
+  /// Карточка дня: нижняя панель со всеми записями даты. Нажатие на
+  /// запись открывает её поверх панели; возврат — сначала к панели,
+  /// затем к календарю. Ничего не записывает.
+  Future<void> _showDay(Day day) => showModalBottomSheet<void>(
+    context: context,
+    showDragHandle: true,
+    isScrollControlled: true,
+    builder: (sheetContext) => _DayCard(
+      day: day,
+      controller: _controller,
+      onOpen: (event) {
+        if (event.isCurrent) {
+          _openStatus(sheetContext, _controller, StatusMode.date);
+          return;
+        }
+        final trip = _controller.snapshot.trips
+            .where((t) => t.id == event.id)
+            .firstOrNull;
+        if (trip != null) _openTrip(sheetContext, _controller, trip);
+      },
+    ),
+  );
+
+  /// Смена страны с предзаполнением из кандидата. true — сохранено.
+  Future<bool> _changeFromCandidate(String? country, Day arrival) async {
+    final before = _controller.snapshot.current;
+    await Navigator.push<void>(
+      context,
+      MaterialPageRoute(
+        builder: (_) => StatusEditor(
+          controller: _controller,
+          mode: StatusMode.change,
+          initialCountry: country,
+          initialArrival: arrival,
+        ),
+      ),
+    );
+    return !identical(_controller.snapshot.current, before);
+  }
+
+  /// Транзит из кандидата: редактор с черновиком. true — сохранено.
+  Future<bool> _transitFromCandidate(Trip draft) async {
+    var saved = false;
+    await Navigator.push<void>(
+      context,
+      MaterialPageRoute(
+        builder: (_) => TripEditor(
+          draft: draft,
+          today: _controller.today,
+          snapshot: () => _controller.snapshot,
+          onSave: (next) async {
+            await _controller.commit(next);
+            saved = true;
+          },
+        ),
+      ),
+    );
+    return saved;
+  }
+
+  Future<void> _review(Candidate candidate) => Navigator.push<void>(
+    context,
+    MaterialPageRoute(
+      builder: (_) => DetectionPage(
+        candidate: candidate,
+        controller: _controller,
+        settings: SettingsController.of(context),
+        today: _day,
+        onChange: _changeFromCandidate,
+        onTransit: _transitFromCandidate,
+      ),
+    ),
+  );
+
+  Future<void> _detect() async {
+    final location = widget.location;
+    if (location == null || _detecting) return;
+    setState(() => _detecting = true);
+    String? message;
+    try {
+      final result = await detectCountry(
+        context: context,
+        location: location,
+        borders: widget.borders,
+        journal: _controller,
+        settings: SettingsController.of(context),
+        today: _day,
+        review: _review,
+      );
+      message = result.message;
+    } finally {
+      if (mounted) setState(() => _detecting = false);
+    }
+    if (message == null || !mounted) return;
+    await showDialog<void>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(context.l10n.detectTitle),
+        content: Text(message!, key: const Key('detectMessage')),
+        actions: [
+          FilledButton(
+            onPressed: () => Navigator.pop(context),
+            child: Text(context.l10n.done),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// «Включить» на карточке «Определение выключено»: обычный запрос
+  /// разрешения; если Android больше не спрашивает или геолокация на
+  /// телефоне выключена — системные настройки, а по возвращении проверка
+  /// повторяется сразу.
+  Future<void> _enableDetect() async {
+    final location = widget.location;
+    if (location == null || _detecting) return;
+    if (_autoOutcome == DetectOutcome.serviceOff) {
+      _recheckOnResume = true;
+      await location.openSettings(service: true);
+      return;
+    }
+    setState(() => _detecting = true);
+    final DetectResult result;
+    try {
+      result = await detectCountry(
+        context: context,
+        location: location,
+        borders: widget.borders,
+        journal: _controller,
+        settings: SettingsController.of(context),
+        today: _day,
+        review: _review,
+      );
+    } finally {
+      if (mounted) setState(() => _detecting = false);
+    }
+    if (!mounted) return;
+    final service = result.outcome == DetectOutcome.serviceOff;
+    if (service || (result.outcome == DetectOutcome.denied && result.forever)) {
+      _recheckOnResume = true;
+      await location.openSettings(service: service);
+      return;
+    }
+    setState(() {
+      _autoOutcome = result.outcome;
+      _autoAt = widget.now();
+    });
+  }
+
+  /// «Не нужно»: автопроверка при открытии выключается (её можно вернуть
+  /// в настройках), карточка больше не показывается.
+  Future<void> _dismissDetectOff() async {
+    await SettingsController.of(context).setAutoDetect(false);
+    if (mounted) setState(() => _autoOutcome = null);
+  }
+
+  Future<void> _chooseYear() async {
+    final year = await showModalBottomSheet<int>(
+      context: context,
+      showDragHandle: true,
+      builder: (context) => SafeArea(
+        child: ListView.builder(
+          itemCount: _day.year - 1900 + 1,
+          itemBuilder: (context, index) {
+            final year = _day.year - index;
+            return ListTile(
+              title: Text('$year'),
+              selected: year == _year,
+              onTap: () => Navigator.pop(context, year),
+            );
+          },
+        ),
+      ),
+    );
+    if (year != null && mounted) setState(() => _year = year);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (!_controller.loading &&
+        !_controller.loadFailed &&
+        _controller.snapshot.needsOnboarding) {
+      return StatusEditor(controller: _controller, mode: StatusMode.onboarding);
+    }
+    final l10n = context.l10n;
+    if (_controller.loading || _controller.loadFailed) {
+      return Scaffold(
+        appBar: AppBar(title: const AppTitle()),
+        body: SafeArea(
+          child: _controller.loading
+              ? const Center(child: CircularProgressIndicator())
+              : ListView(
+                  padding: const EdgeInsets.all(24),
+                  children: [
+                    const Icon(Icons.folder_off_outlined, size: 48),
+                    const SizedBox(height: 20),
+                    Text(
+                      l10n.loadFailedTitle,
+                      style: Theme.of(context).textTheme.titleLarge,
+                    ),
+                    const SizedBox(height: 12),
+                    Text(l10n.loadFailedBody),
+                    const SizedBox(height: 24),
+                    FilledButton(
+                      onPressed: _controller.load,
+                      child: Text(l10n.retryOpen),
+                    ),
+                  ],
+                ),
+        ),
+      );
+    }
+    final map = _map;
+    final tabs = [_today, _calendar, if (map != null) _mapTab, _journalTab];
+    final selected = tabs.indexOf(_tab);
+    Widget page(int tab) {
+      if (!_built.contains(tab)) return const SizedBox.shrink();
+      return switch (tab) {
+        _today => _todayTab(context),
+        _calendar => _calendarTab(context),
+        _mapTab => _mapPage(map!),
+        _ => JournalPage(controller: _controller),
+      };
+    }
+
+    return PopScope(
+      // Системный «назад» с любой вкладки — на «Сегодня», как принято в
+      // Android; второе нажатие закрывает приложение.
+      canPop: _tab == _today,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop) _goTab(_today);
+      },
+      child: Scaffold(
+        body: IndexedStack(
+          index: selected < 0 ? 0 : selected,
+          children: [for (final t in tabs) page(t)],
+        ),
+        bottomNavigationBar: NavigationBar(
+          key: const Key('navBar'),
+          selectedIndex: selected < 0 ? 0 : selected,
+          onDestinationSelected: (i) => _goTab(tabs[i]),
+          destinations: [
+            NavigationDestination(
+              key: const Key('navToday'),
+              icon: const Icon(Icons.today_outlined),
+              selectedIcon: const Icon(Icons.today),
+              label: l10n.navToday,
+            ),
+            NavigationDestination(
+              key: const Key('navCalendar'),
+              icon: const Icon(Icons.calendar_month_outlined),
+              selectedIcon: const Icon(Icons.calendar_month),
+              label: l10n.navCalendar,
+            ),
+            if (map != null)
+              NavigationDestination(
+                key: const Key('openMap'),
+                icon: const Icon(Icons.public_outlined),
+                selectedIcon: const Icon(Icons.public),
+                label: l10n.navMap,
+              ),
+            NavigationDestination(
+              key: const Key('openJournal'),
+              icon: const Icon(Icons.auto_stories_outlined),
+              selectedIcon: const Icon(Icons.auto_stories),
+              label: l10n.navJournal,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _mapPage(WorldMapData map) {
+    final snapshot = _controller.snapshot;
+    final summary = YearSummary(snapshot, _year, _day);
+    final calendarData = YearCalendarData(summary, _day, snapshot: snapshot);
+    return MapPage(
+      controller: _controller,
+      data: map,
+      borders: widget.borders,
+      year: _year,
+      yearSlots: calendarData.slots,
+    );
+  }
+
+  /// «Сегодня»: где вы сейчас, плитки текущего года, последние поездки.
+  Widget _todayTab(BuildContext context) {
+    final snapshot = _controller.snapshot;
+    final summary = YearSummary(snapshot, _day.year, _day);
+    final recent = [...snapshot.trips]
+      ..sort((a, b) {
+        final order = b.departure.compareTo(a.departure);
+        return order == 0 ? a.id.compareTo(b.id) : order;
+      });
+    final l10n = context.l10n;
+    final candidate = SettingsController.of(context).candidate;
+    return Scaffold(
+      appBar: AppBar(
+        title: const AppTitle(),
+        actions: [
+          IconButton(
+            key: const Key('openSettings'),
+            tooltip: l10n.settingsTooltip,
+            onPressed: () => _openStatus(context, _controller, StatusMode.home),
+            icon: const Icon(Icons.settings_outlined),
+          ),
+        ],
+      ),
+      body: SafeArea(
+        child: Center(
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 720),
+            child: ListView(
+              key: const Key('dashboardScroll'),
+              padding: const EdgeInsets.fromLTRB(20, 12, 20, 32),
+              children: [
+                Text(
+                  l10n.todayLine(_day.text(context)),
+                  style: TextStyle(
+                    fontSize: 14,
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  ),
+                ),
+                const SizedBox(height: 16),
+                _CurrentCard(
+                  stay: snapshot.current!,
+                  today: _day,
+                  series: continuousStay(snapshot, _day),
+                  transitToday: snapshot.trips
+                      .where(
+                        (t) =>
+                            t.isTransit &&
+                            t.arrival.compareTo(_day) <= 0 &&
+                            t.departure.compareTo(_day) >= 0,
+                      )
+                      .map(
+                        (t) => countryName(context, t.countryCode, t.country),
+                      )
+                      .firstOrNull,
+                  onDate: () =>
+                      _openStatus(context, _controller, StatusMode.date),
+                  onChange: () =>
+                      _openStatus(context, _controller, StatusMode.change),
+                ),
+                if ((candidate != null && !candidate.dismissed) ||
+                    widget.location != null) ...[
+                  const SizedBox(height: 10),
+                  _DetectRow(
+                    candidate: candidate != null && !candidate.dismissed
+                        ? candidate
+                        : null,
+                    autoText: _autoOutcome != null && _autoAt != null
+                        ? _autoStatusText(l10n)
+                        : null,
+                    off:
+                        SettingsController.of(context).settings.autoDetect &&
+                            (_autoOutcome == DetectOutcome.denied ||
+                                _autoOutcome == DetectOutcome.serviceOff)
+                        ? _autoOutcome
+                        : null,
+                    canDetect: widget.location != null,
+                    detecting: _detecting,
+                    onReview: () => _review(candidate!),
+                    onDismiss: () =>
+                        SettingsController.of(context).dismissCandidate(),
+                    onDetect: _detect,
+                    onEnable: _enableDetect,
+                    onDismissOff: _dismissDetectOff,
+                  ),
+                ],
+                if (BackupScope.of(context) != null &&
+                    SettingsController.of(context).settings.backupNudgeDue(
+                      widget.now(),
+                      snapshot.trips.length,
+                    )) ...[
+                  const SizedBox(height: 10),
+                  _BackupNudge(controller: _controller, now: widget.now),
+                ],
+                ..._planCards(context, snapshot),
+                if (_day.month == 12 && _day.day >= 20) ...[
+                  const SizedBox(height: 10),
+                  Card(
+                    key: const Key('reviewNudge'),
+                    clipBehavior: Clip.antiAlias,
+                    child: ListTile(
+                      leading: const Icon(Icons.auto_awesome_outlined),
+                      title: Text(l10n.reviewNudge(_day.year)),
+                      trailing: const Icon(Icons.chevron_right_rounded),
+                      onTap: () => _openReview(_day.year),
+                    ),
+                  ),
+                ],
+                if (onThisDay(snapshot, _day) case final entries
+                    when entries.isNotEmpty) ...[
+                  const SizedBox(height: 24),
+                  _OnThisDayCard(
+                    entries: entries,
+                    onOpen: (trip) {
+                      final real = snapshot.trips
+                          .where((t) => t.id == trip.id)
+                          .firstOrNull;
+                      if (real != null) _openTrip(context, _controller, real);
+                    },
+                  ),
+                ],
+                const SizedBox(height: 24),
+                _SectionHeader(
+                  title: '${_day.year}',
+                  meta: l10n.periodLine(
+                    Day(_day.year, 1, 1).shortText(context),
+                    summary.through.shortText(context),
+                    l10n.daysCompact(summary.total),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                // Плитки текущего года; нажатие ведёт в календарь.
+                _YearTiles(
+                  summary: summary,
+                  home: countryName(
+                    context,
+                    snapshot.homeCountryCode,
+                    snapshot.homeCountry!,
+                  ),
+                  onGaps: () => Navigator.push<void>(
+                    context,
+                    MaterialPageRoute(
+                      builder: (_) => GapPreviewPage(
+                        controller: _controller,
+                        year: _day.year,
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Align(
+                  alignment: Alignment.centerRight,
+                  child: TextButton.icon(
+                    key: const Key('toCalendar'),
+                    onPressed: () {
+                      setState(() => _year = _day.year);
+                      _goTab(_calendar);
+                    },
+                    icon: const Icon(Icons.calendar_month_outlined),
+                    label: Text(l10n.openCalendar),
+                  ),
+                ),
+                const SizedBox(height: 20),
+                _SectionHeader(title: l10n.recentTrips),
+                const SizedBox(height: 12),
+                if (recent.isEmpty) ...[
+                  Text(l10n.noCompletedTrips),
+                  if (BackupScope.of(context) != null &&
+                      ImportScope.of(context) != null)
+                    Align(
+                      alignment: Alignment.centerLeft,
+                      child: TextButton.icon(
+                        key: const Key('todayImport'),
+                        onPressed: () =>
+                            startTimelineImport(context, _controller),
+                        icon: const Icon(Icons.map_outlined),
+                        label: Text(l10n.importTitle),
+                      ),
+                    ),
+                ] else
+                  Card(
+                    clipBehavior: Clip.antiAlias,
+                    child: Column(
+                      children: [
+                        for (var i = 0; i < recent.length && i < 3; i++)
+                          _RecentRow(
+                            trip: recent[i],
+                            divider: i > 0,
+                            onTap: () =>
+                                _openTrip(context, _controller, recent[i]),
+                          ),
+                      ],
+                    ),
+                  ),
+                const SizedBox(height: 4),
+                TextButton.icon(
+                  key: const Key('allJournal'),
+                  onPressed: _journal,
+                  icon: const Icon(Icons.auto_stories_outlined),
+                  label: Text(l10n.allJournalAndArchive),
+                ),
+                const SizedBox(height: 24),
+                Text(
+                  l10n.localOnlyNoBackup,
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(fontSize: 14),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// «Календарь»: год со стрелками, двенадцать месяцев, плитки года,
+  /// «Поделиться», «По странам».
+  Widget _calendarTab(BuildContext context) {
+    final snapshot = _controller.snapshot;
+    final summary = YearSummary(snapshot, _year, _day);
+    final l10n = context.l10n;
+    // Фильтр по стране: календарь с днями только этой страны, как на её
+    // странице; плитки и «По странам» — за весь год.
+    final filterKey = _calendarCountry;
+    final filteredSnapshot = filterKey == null
+        ? null
+        : JournalSnapshot(
+            trips: snapshot.trips.where((t) => t.countryKey == filterKey),
+            homeCountry: snapshot.homeCountry,
+            homeCountryCode: snapshot.homeCountryCode,
+            current: snapshot.current?.countryKey == filterKey
+                ? snapshot.current
+                : null,
+          );
+    final calendarSummary = filteredSnapshot == null
+        ? summary
+        : YearSummary(filteredSnapshot, _year, _day);
+    final filterStat = summary.countries
+        .where((c) => c.key == filterKey)
+        .firstOrNull;
+    final filterLabel = filterKey == null
+        ? null
+        : countryName(
+            context,
+            filterStat?.code,
+            filterStat?.label ??
+                snapshot
+                    .knownTrips(_day)
+                    .where((t) => t.countryKey == filterKey)
+                    .map((t) => t.country)
+                    .firstOrNull ??
+                filterKey,
+          );
+    // Цвета стран календаря — квадратиками в «По странам» (вместо легенды).
+    final calendarData = YearCalendarData(summary, _day, snapshot: snapshot);
+    final colors = DomidayColors.of(context);
+    Color swatchFor(CountryStat c) => c.key == snapshot.homeKey
+        ? colors.homeCell
+        : colors.countryColor(calendarData.slots[c.key] ?? -1);
+    return Scaffold(
+      appBar: AppBar(title: Text(l10n.navCalendar)),
+      body: SafeArea(
+        child: Center(
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 720),
+            child: ListView(
+              key: const Key('calendarScroll'),
+              padding: const EdgeInsets.fromLTRB(20, 4, 20, 32),
+              children: [
+                // Год — заголовок блока со стрелками: сразу видно,
+                // что годы листаются; нажатие на год — список лет.
+                Row(
+                  children: [
+                    IconButton(
+                      key: const Key('yearPrev'),
+                      tooltip: l10n.yearPrev,
+                      onPressed: _year > 1900
+                          ? () => setState(() => _year--)
+                          : null,
+                      icon: const Icon(Icons.chevron_left_rounded),
+                    ),
+                    Expanded(
+                      child: Semantics(
+                        button: true,
+                        label: l10n.yearSummaryButton(_year),
+                        child: InkWell(
+                          key: const Key('dashboardYear'),
+                          borderRadius: BorderRadius.circular(12),
+                          onTap: _chooseYear,
+                          child: Padding(
+                            padding: const EdgeInsets.symmetric(vertical: 4),
+                            child: Column(
+                              children: [
+                                Text(
+                                  '$_year',
+                                  style: display(size: 28, height: 1.1),
+                                ),
+                                Text(
+                                  l10n.periodLine(
+                                    summary.year == _day.year
+                                        ? Day(
+                                            summary.year,
+                                            1,
+                                            1,
+                                          ).shortText(context)
+                                        : Day(summary.year, 1, 1).text(context),
+                                    summary.year == _day.year
+                                        ? summary.through.shortText(context)
+                                        : summary.through.text(context),
+                                    l10n.daysCompact(summary.total),
+                                  ),
+                                  textAlign: TextAlign.center,
+                                  style: TextStyle(
+                                    fontSize: 14,
+                                    color: Theme.of(context)
+                                        .colorScheme
+                                        .onSurfaceVariant,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                    IconButton(
+                      key: const Key('yearNext'),
+                      tooltip: l10n.yearNext,
+                      onPressed: _year < _day.year
+                          ? () => setState(() => _year++)
+                          : null,
+                      icon: const Icon(Icons.chevron_right_rounded),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  crossAxisAlignment: WrapCrossAlignment.center,
+                  children: [
+                    ActionChip(
+                      key: const Key('calendarCountry'),
+                      tooltip: l10n.calendarFilter,
+                      avatar: filterStat?.code != null
+                          ? CountryFlag(code: filterStat!.code, width: 18)
+                          : const Icon(Icons.filter_list_rounded, size: 18),
+                      label: Text(filterLabel ?? l10n.allCountries),
+                      onPressed: () => _chooseCalendarCountry(summary),
+                    ),
+                    if (filterKey != null)
+                      IconButton(
+                        key: const Key('calendarCountryClear'),
+                        tooltip: l10n.allCountries,
+                        onPressed: () =>
+                            setState(() => _calendarCountry = null),
+                        icon: const Icon(Icons.close_rounded),
+                      ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                Card(
+                  child: Padding(
+                    padding: const EdgeInsets.all(16),
+                    child: YearCalendar(
+                      summary: calendarSummary,
+                      today: _day,
+                      snapshot: filteredSnapshot ?? snapshot,
+                      slots: filterKey == null
+                          ? null
+                          : {filterKey: ?calendarData.slots[filterKey]},
+                      onDayTap: _showDay,
+                      minYear: 1900,
+                      maxYear: _day.year,
+                      onYearChange: (delta) {
+                        final next = (_year + delta).clamp(1900, _day.year);
+                        if (next != _year) setState(() => _year = next);
+                      },
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 10),
+                _YearTiles(
+                  summary: summary,
+                  home: countryName(
+                    context,
+                    snapshot.homeCountryCode,
+                    snapshot.homeCountry!,
+                  ),
+                  onGaps: () => Navigator.push<void>(
+                    context,
+                    MaterialPageRoute(
+                      builder: (_) =>
+                          GapPreviewPage(controller: _controller, year: _year),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 6),
+                Align(
+                  alignment: Alignment.centerRight,
+                  child: TextButton.icon(
+                    key: const Key('yearReview'),
+                    onPressed: () => _openReview(_year),
+                    icon: const Icon(Icons.auto_awesome_outlined),
+                    label: Text(l10n.reviewOpen),
+                  ),
+                ),
+                if (ShareScope.of(context) != null) ...[
+                  Align(
+                    alignment: Alignment.centerRight,
+                    child: TextButton.icon(
+                      key: const Key('shareYear'),
+                      onPressed: () => Navigator.push<void>(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => SharePage(
+                            controller: _controller,
+                            year: _year,
+                            slots: calendarData.slots,
+                          ),
+                        ),
+                      ),
+                      icon: const Icon(Icons.ios_share_outlined),
+                      label: Text(l10n.shareYear),
+                    ),
+                  ),
+                ],
+                const SizedBox(height: 10),
+                Text(
+                  l10n.methodologyLine,
+                  style: TextStyle(
+                    fontSize: 14,
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  ),
+                ),
+                const SizedBox(height: 28),
+                _SectionHeader(
+                  title: l10n.byCountry,
+                  meta: summary.countries.isEmpty
+                      ? null
+                      : l10n.shareOfKnownDays,
+                ),
+                const SizedBox(height: 12),
+                if (summary.countries.isEmpty)
+                  Text(l10n.noCountryData)
+                else
+                  Card(
+                    clipBehavior: Clip.antiAlias,
+                    child: Column(
+                      children: [
+                        for (var i = 0; i < summary.countries.length; i++)
+                          _CountryRow(
+                            stat: summary.countries[i],
+                            isHome:
+                                summary.countries[i].key == snapshot.homeKey,
+                            share: summary.known.isEmpty
+                                ? 0
+                                : summary.countries[i].days /
+                                      summary.known.length,
+                            divider: i > 0,
+                            swatch: swatchFor(summary.countries[i]),
+                            onTap: () => Navigator.push<void>(
+                              context,
+                              MaterialPageRoute(
+                                builder: (_) => CountryPage(
+                                  controller: _controller,
+                                  countryKey: summary.countries[i].key,
+                                  year: _year,
+                                  slot: calendarData
+                                      .slots[summary.countries[i].key],
+                                ),
+                              ),
+                            ),
+                          ),
+                      ],
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Редактор плана: тот же TripEditor в режиме плана; удаление убирает
+/// план из списка планов.
+Future<void> openPlanEditor(
+  BuildContext context,
+  JournalController controller, {
+  Trip? plan,
+}) => Navigator.push<void>(
+  context,
+  MaterialPageRoute(
+    builder: (_) => TripEditor(
+      trip: plan,
+      plan: true,
+      today: controller.today,
+      snapshot: () => controller.snapshot,
+      onSave: controller.commit,
+      onDelete: plan == null
+          ? null
+          : () => controller.commit(
+              controller.snapshot.copyWith(
+                plans: controller.snapshot.plans.where((p) => p.id != plan.id),
+              ),
+            ),
+    ),
+  ),
+);
+
+/// План, чьи даты прошли: добавить как поездку (обычный редактор с
+/// черновиком и проверкой пересечений); при сохранении план удаляется.
+Future<void> addPlanAsTrip(
+  BuildContext context,
+  JournalController controller,
+  Trip plan,
+) => Navigator.push<void>(
+  context,
+  MaterialPageRoute(
+    builder: (_) => TripEditor(
+      draft: plan,
+      today: controller.today,
+      snapshot: () => controller.snapshot,
+      onSave: (next) => controller.commit(
+        next.copyWith(plans: next.plans.where((p) => p.id != plan.id)),
+      ),
+    ),
+  ),
+);
+
+/// Строка плана: флаг, страна · город, даты, справа «через N дней»,
+/// «по плану в эти дни» или «даты прошли, не подтверждён».
+class PlanRow extends StatelessWidget {
+  final Trip plan;
+  final Day today;
+  final bool divider;
+  final VoidCallback onTap;
+  const PlanRow({
+    super.key,
+    required this.plan,
+    required this.today,
+    required this.divider,
+    required this.onTap,
+  });
+
+  static String status(BuildContext context, Trip plan, Day today) {
+    final l10n = context.l10n;
+    if (plan.departure.compareTo(today) < 0) return l10n.planOverdue;
+    if (plan.arrival.compareTo(today) <= 0) return l10n.planOngoing;
+    return l10n.planInDays(plan.daysUntil(today));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final muted = TextStyle(fontSize: 13, color: scheme.onSurfaceVariant);
+    final overdue = plan.departure.compareTo(today) < 0;
+    final dates = plan.arrival == plan.departure
+        ? plan.arrival.text(context)
+        : '${plan.arrival.text(context)} — ${plan.departure.text(context)}';
+    return InkWell(
+      key: Key('plan-${plan.id}'),
+      onTap: onTap,
+      child: Container(
+        decoration: divider
+            ? BoxDecoration(
+                border: Border(
+                  top: BorderSide(color: scheme.outlineVariant, width: 1),
+                ),
+              )
+            : null,
+        padding: const EdgeInsets.fromLTRB(16, 12, 14, 12),
+        child: Row(
+          children: [
+            if (plan.countryCode != null) ...[
+              CountryFlag(code: plan.countryCode, width: 30),
+              const SizedBox(width: 12),
+            ],
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    [
+                      countryName(context, plan.countryCode, plan.country),
+                      if (plan.city.trim().isNotEmpty) plan.city.trim(),
+                    ].join(' · '),
+                    style: const TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  Text(dates, style: muted),
+                ],
+              ),
+            ),
+            const SizedBox(width: 8),
+            Text(
+              status(context, plan, today),
+              textAlign: TextAlign.right,
+              style: TextStyle(
+                fontSize: 13,
+                fontWeight: FontWeight.w600,
+                color: overdue ? scheme.error : scheme.onSurfaceVariant,
+              ),
+            ),
+            Icon(Icons.chevron_right_rounded, color: scheme.onSurfaceVariant),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// «В этот день»: что было в эту дату в прошлые годы. Только чтение;
+/// нажатие открывает поездку.
+class _OnThisDayCard extends StatelessWidget {
+  final List<OnThisDayEntry> entries;
+  final ValueChanged<Trip> onOpen;
+  const _OnThisDayCard({required this.entries, required this.onOpen});
+
+  @override
+  Widget build(BuildContext context) {
+    final l10n = context.l10n;
+    final scheme = Theme.of(context).colorScheme;
+    final muted = TextStyle(fontSize: 13, color: scheme.onSurfaceVariant);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _SectionHeader(title: l10n.onThisDayTitle),
+        const SizedBox(height: 12),
+        Card(
+          key: const Key('onThisDay'),
+          clipBehavior: Clip.antiAlias,
+          child: Column(
+            children: [
+              for (var i = 0; i < entries.length && i < 5; i++)
+                InkWell(
+                  key: Key(
+                    'onThisDay-${entries[i].year}-${entries[i].trip.id}',
+                  ),
+                  onTap: () => onOpen(entries[i].trip),
+                  child: Container(
+                    decoration: i > 0
+                        ? BoxDecoration(
+                            border: Border(
+                              top: BorderSide(color: scheme.outlineVariant),
+                            ),
+                          )
+                        : null,
+                    padding: const EdgeInsets.fromLTRB(16, 12, 14, 12),
+                    child: Row(
+                      children: [
+                        Text(
+                          '${entries[i].year}',
+                          style: display(size: 18, height: 1),
+                        ),
+                        const SizedBox(width: 12),
+                        if (entries[i].trip.countryCode != null) ...[
+                          CountryFlag(
+                            code: entries[i].trip.countryCode,
+                            width: 26,
+                          ),
+                          const SizedBox(width: 10),
+                        ],
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                [
+                                  countryName(
+                                    context,
+                                    entries[i].trip.countryCode,
+                                    entries[i].trip.country,
+                                  ),
+                                  if (entries[i].trip.city.trim().isNotEmpty)
+                                    entries[i].trip.city.trim(),
+                                ].join(', '),
+                                style: const TextStyle(
+                                  fontSize: 16,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                              Text(
+                                entries[i].trip.isTransit
+                                    ? l10n.onThisDayTransit
+                                    : entries[i].exact
+                                    ? l10n.onThisDayDay(
+                                        entries[i].dayIndex,
+                                        entries[i].trip.days,
+                                      )
+                                    : l10n.onThisDayAround,
+                                style: muted,
+                              ),
+                            ],
+                          ),
+                        ),
+                        Icon(
+                          Icons.chevron_right_rounded,
+                          color: scheme.onSurfaceVariant,
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _SectionHeader extends StatelessWidget {
+  final String title;
+  final String? meta;
+  const _SectionHeader({required this.title, this.meta});
+
+  @override
+  Widget build(BuildContext context) => Wrap(
+    spacing: 12,
+    runSpacing: 4,
+    crossAxisAlignment: WrapCrossAlignment.end,
+    children: [
+      Text(
+        title,
+        style: Theme.of(context).textTheme.titleLarge
+            ?.copyWith(fontSize: 20, height: 1.25),
+      ),
+      if (meta != null)
+        Text(
+          meta!,
+          style: TextStyle(
+            fontSize: 14,
+            color: Theme.of(context).colorScheme.onSurfaceVariant,
+          ),
+        ),
+    ],
+  );
+}
+
+/// Одна строка на страну: название, дни, число записей и полоса доли.
+class _CountryRow extends StatelessWidget {
+  final CountryStat stat;
+  final bool isHome;
+  final double share;
+  final bool divider;
+  final VoidCallback onTap;
+
+  /// Цвет страны в календаре (квадратик перед флагом); null — без него.
+  final Color? swatch;
+  const _CountryRow({
+    required this.stat,
+    required this.isHome,
+    required this.share,
+    required this.divider,
+    required this.onTap,
+    this.swatch,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = DomidayColors.of(context);
+    final scheme = Theme.of(context).colorScheme;
+    final muted = TextStyle(fontSize: 13, color: scheme.onSurfaceVariant);
+    // Стиль с шрифтом темы: им же измеряется ширина названия и дней, иначе
+    // TextPainter мерил бы запасным шрифтом и ошибался.
+    final bold = DefaultTextStyle.of(context).style.merge(
+      const TextStyle(fontSize: 17, fontWeight: FontWeight.w700, height: 1.25),
+    );
+    final label = countryName(context, stat.code, stat.label);
+    final daysText = context.l10n.daysCompact(stat.days);
+    final name = Row(
+      crossAxisAlignment: CrossAxisAlignment.center,
+      children: [
+        if (swatch != null) ...[
+          Container(
+            width: 12,
+            height: 12,
+            decoration: BoxDecoration(
+              color: swatch,
+              borderRadius: BorderRadius.circular(3),
+            ),
+          ),
+          const SizedBox(width: 8),
+        ],
+        if (stat.code != null) ...[
+          CountryFlag(code: stat.code, width: 22),
+          const SizedBox(width: 8),
+        ],
+        Expanded(
+          child: _FitName(
+            label,
+            textKey: Key('country-name-${stat.key}'),
+            sizes: const [17, 15.5, 14],
+            style: (size) => bold.copyWith(fontSize: size),
+          ),
+        ),
+      ],
+    );
+    final records = Text(
+      stat.transits == 0
+          ? context.l10n.recordsCount(stat.trips)
+          : '${context.l10n.recordsCount(stat.trips)} · '
+                '${context.l10n.transitsCount(stat.transits)}',
+      style: muted,
+    );
+    final days = Text(
+      daysText,
+      key: Key('country-days-${stat.key}'),
+      textAlign: TextAlign.end,
+      softWrap: false,
+      style: bold,
+    );
+    final chevron = Icon(
+      Icons.chevron_right_rounded,
+      size: 22,
+      color: scheme.onSurfaceVariant,
+    );
+    return InkWell(
+      key: Key('country-stat-${stat.key}'),
+      onTap: onTap,
+      child: Container(
+        decoration: divider
+            ? BoxDecoration(
+                border: Border(
+                  top: BorderSide(color: scheme.outlineVariant, width: 1),
+                ),
+              )
+            : null,
+        padding: const EdgeInsets.fromLTRB(20, 14, 16, 14),
+        child: LayoutBuilder(
+          builder: (context, constraints) {
+            // Дни и шеврон прижаты к правому краю, название получает всю
+            // оставшуюся ширину (Flexible вокруг дней делил её пополам —
+            // «Великобр/итания» рвалось даже на 390 px). Если название в
+            // полном размере не умещается рядом с днями (длинное слово,
+            // крупный текст, узкий экран), дни уходят во вторую строку,
+            // к правому краю — шрифт не мельчает.
+            final scaler = MediaQuery.textScalerOf(context);
+            final lead =
+                (swatch != null ? 20.0 : 0.0) +
+                (stat.code != null ? 30.0 : 0.0);
+            final needed =
+                lead +
+                _FitName._measure(label, bold, scaler, double.infinity).width +
+                12 +
+                _FitName._measure(
+                  daysText,
+                  bold,
+                  scaler,
+                  double.infinity,
+                ).width +
+                4 +
+                22;
+            final stacked = isCompact(context) || needed > constraints.maxWidth;
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                if (stacked) ...[
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Expanded(child: name),
+                      const SizedBox(width: 4),
+                      chevron,
+                    ],
+                  ),
+                  if (isHome) Text(context.l10n.homeCountry, style: muted),
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.end,
+                    children: [
+                      Expanded(child: records),
+                      const SizedBox(width: 12),
+                      days,
+                    ],
+                  ),
+                ] else
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            name,
+                            if (isHome)
+                              Text(context.l10n.homeCountry, style: muted),
+                            records,
+                          ],
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      days,
+                      const SizedBox(width: 4),
+                      chevron,
+                    ],
+                  ),
+                const SizedBox(height: 10),
+                LinearProgressIndicator(
+                  value: share.clamp(0, 1),
+                  minHeight: 6,
+                  color: isHome ? colors.home : colors.away,
+                  backgroundColor: colors.track,
+                  borderRadius: BorderRadius.circular(3),
+                  semanticsLabel: context.l10n.countryShareSemantics(
+                    label,
+                    stat.days,
+                    (share * 100).round(),
+                  ),
+                ),
+              ],
+            );
+          },
+        ),
+      ),
+    );
+  }
+}
+
+/// Компактная строка завершённой поездки: страна · город, даты, дни.
+class _RecentRow extends StatelessWidget {
+  final Trip trip;
+  final bool divider;
+  final VoidCallback onTap;
+  const _RecentRow({
+    required this.trip,
+    required this.divider,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final muted = TextStyle(fontSize: 13, color: scheme.onSurfaceVariant);
+    final l10n = context.l10n;
+    // Узкий экран с крупным текстом: дни в строке дат, справа ничего.
+    final compact = isCompact(context);
+    final dates = trip.arrival == trip.departure
+        ? trip.arrival.text(context)
+        : '${trip.arrival.text(context)} — ${trip.departure.text(context)}';
+    return InkWell(
+      key: Key('trip-${trip.id}'),
+      onTap: onTap,
+      child: Container(
+        decoration: divider
+            ? BoxDecoration(
+                border: Border(
+                  top: BorderSide(color: scheme.outlineVariant, width: 1),
+                ),
+              )
+            : null,
+        padding: const EdgeInsets.fromLTRB(16, 13, 14, 13),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.center,
+          children: [
+            if (trip.countryCode != null) ...[
+              CountryFlag(code: trip.countryCode, width: 30),
+              const SizedBox(width: 12),
+            ],
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text.rich(
+                    TextSpan(
+                      text: countryName(
+                        context,
+                        trip.countryCode,
+                        trip.country,
+                      ),
+                      style: const TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.w700,
+                        height: 1.3,
+                      ),
+                      children: [
+                        if (trip.city.isNotEmpty)
+                          TextSpan(
+                            text: ' · ${trip.city}',
+                            style: TextStyle(
+                              fontWeight: FontWeight.w400,
+                              color: scheme.onSurfaceVariant,
+                            ),
+                          ),
+                        if (trip.isTransit)
+                          TextSpan(
+                            text: ' · ${context.l10n.kindTransit}',
+                            style: TextStyle(
+                              fontWeight: FontWeight.w700,
+                              fontSize: 13,
+                              color: scheme.onSurfaceVariant,
+                            ),
+                          ),
+                      ],
+                    ),
+                  ),
+                  Text(
+                    compact ? '$dates · ${l10n.daysCompact(trip.days)}' : dates,
+                    style: muted,
+                  ),
+                ],
+              ),
+            ),
+            if (!compact) ...[
+              const SizedBox(width: 12),
+              Text(
+                l10n.daysCompact(trip.days),
+                style: const TextStyle(
+                  fontSize: 16,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+            ],
+            const SizedBox(width: 4),
+            Icon(
+              Icons.chevron_right_rounded,
+              size: 22,
+              color: scheme.onSurfaceVariant,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _CurrentCard extends StatelessWidget {
+  final CurrentStay stay;
+  final Day today;
+  final VoidCallback onDate;
+  final VoidCallback? onChange;
+
+  /// Страна транзита на сегодня, если он записан: пребывание не меняется,
+  /// но карточка не молчит о перемещении.
+  final String? transitToday;
+
+  /// Непрерывная серия дней в стране назад от сегодня (см. continuousStay);
+  /// null — дата приезда неизвестна.
+  final ({Day start, int days})? series;
+  const _CurrentCard({
+    required this.stay,
+    required this.today,
+    required this.onDate,
+    this.onChange,
+    this.transitToday,
+    this.series,
+  });
+  @override
+  Widget build(BuildContext context) {
+    final colors = DomidayColors.of(context);
+    final l10n = context.l10n;
+    final arrival = stay.arrival;
+    final run =
+        series ??
+        (arrival == null
+            ? null
+            : (start: arrival, days: today.ordinal - arrival.ordinal + 1));
+    final days = run?.days;
+    final start = run?.start;
+    // На узком экране с крупным текстом флаг меньше, чтобы названию
+    // страны оставалось место.
+    final compact = isCompact(context);
+    final flag = stay.countryCode == null
+        ? null
+        : CountryFlag(code: stay.countryCode, width: compact ? 60 : 96);
+    return Container(
+      key: const Key('currentStay'),
+      padding: const EdgeInsets.fromLTRB(20, 18, 20, 18),
+      decoration: BoxDecoration(
+        color: colors.hero,
+        borderRadius: BorderRadius.circular(kRadiusHero),
+      ),
+      child: DefaultTextStyle(
+        style: TextStyle(
+          fontFamily: 'Roboto',
+          color: colors.heroInk,
+          fontSize: 16,
+          height: 1.4,
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // Текст слева, флаг справа на высоте «Сейчас · дни · страна»:
+            // карточка не растёт в высоту из-за флага.
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        l10n.nowStayEyebrow,
+                        style: TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w700,
+                          letterSpacing: 1.2,
+                          color: colors.heroMuted,
+                        ),
+                      ),
+                      const SizedBox(height: 6),
+                      if (days != null)
+                        Text.rich(
+                          TextSpan(
+                            children: [
+                              TextSpan(
+                                text: '$days',
+                                style: display(
+                                  size: 46,
+                                  color: kYellow,
+                                  height: 1.0,
+                                  letterSpacing: -1.2,
+                                ),
+                              ),
+                              TextSpan(
+                                // Слово без числа: «25 дней» → « дней».
+                                text: l10n
+                                    .daysFull(days)
+                                    .replaceFirst('$days', '')
+                                    .trimRight(),
+                                style: TextStyle(
+                                  fontSize: 17,
+                                  fontWeight: FontWeight.w500,
+                                  color: colors.heroMuted,
+                                ),
+                              ),
+                            ],
+                          ),
+                          key: const Key('currentDuration'),
+                        ),
+                      const SizedBox(height: 2),
+                      _FitName(
+                        countryName(context, stay.countryCode, stay.country),
+                        color: colors.heroInk,
+                      ),
+                      if (days == null)
+                        Padding(
+                          padding: const EdgeInsets.only(top: 6),
+                          child: Text(
+                            l10n.arrivalUnknown,
+                            key: const Key('currentDuration'),
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+                if (flag != null) ...[
+                  const SizedBox(width: 16),
+                  Padding(padding: const EdgeInsets.only(top: 2), child: flag),
+                ],
+              ],
+            ),
+            const SizedBox(height: 8),
+            Text(
+              start == null
+                  ? l10n.noDateNoDays
+                  : arrival != null && start.ordinal < arrival.ordinal
+                  ? l10n.seriesLine(start.text(context))
+                  : l10n.sinceArrivalLine(start.text(context)),
+              style: TextStyle(fontSize: 14, color: colors.heroMuted),
+            ),
+            // Пребывание считается само — сказать прямо, чтобы не казалось,
+            // что дни надо отмечать каждый день.
+            const SizedBox(height: 4),
+            Text(
+              l10n.countsItself,
+              key: const Key('countsItself'),
+              style: TextStyle(
+                fontSize: 14,
+                fontWeight: FontWeight.w600,
+                color: colors.heroInk,
+              ),
+            ),
+            if (transitToday != null) ...[
+              const SizedBox(height: 6),
+              Text(
+                l10n.transitToday(transitToday!),
+                key: const Key('transitToday'),
+                style: TextStyle(
+                  fontSize: 14,
+                  fontWeight: FontWeight.w700,
+                  color: colors.heroInk,
+                ),
+              ),
+            ],
+            const SizedBox(height: 14),
+            Wrap(
+              spacing: 10,
+              runSpacing: 10,
+              children: [
+                if (onChange != null)
+                  FilledButton.icon(
+                    key: const Key('changeCountry'),
+                    onPressed: onChange,
+                    icon: const Icon(Icons.public_outlined),
+                    label: Text(l10n.changeCountry),
+                  ),
+                OutlinedButton.icon(
+                  key: const Key('correctDate'),
+                  onPressed: onDate,
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: colors.heroInk,
+                    side: BorderSide(color: colors.heroMuted, width: 1.5),
+                    minimumSize: const Size(48, 56),
+                    padding: const EdgeInsets.symmetric(horizontal: 18),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(kRadiusButton),
+                    ),
+                  ),
+                  icon: const Icon(Icons.edit_calendar_outlined),
+                  label: Text(
+                    arrival == null ? l10n.arrivalDate : l10n.dateShort,
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// Узкий экран с крупным текстом (320 px при 180 %): строки укладываются
+/// в две строки, а не жмут ширину.
+bool isCompact(BuildContext context) =>
+    MediaQuery.sizeOf(context).width /
+        MediaQuery.textScalerOf(context).scale(1) <
+    300;
+
+/// Название страны, которое никогда не рвётся посреди слова: подбирается
+/// самый крупный из размеров [sizes], при котором каждое слово помещается в
+/// строку и всё название — в две строки; иначе одна строка сжимается.
+/// По умолчанию — крупный заголовок карточки «Сейчас»; [style] задаёт
+/// другой стиль по размеру (строка «По странам»).
+class _FitName extends StatelessWidget {
+  final String text;
+  final Color? color;
+  final Key textKey;
+  final List<double> sizes;
+  final TextStyle Function(double size)? style;
+  const _FitName(
+    this.text, {
+    this.color,
+    this.textKey = const Key('currentCountry'),
+    this.sizes = const [28.0, 24.0, 21.0],
+    this.style,
+  });
+
+  TextStyle _style(double size) =>
+      style?.call(size) ?? display(size: size, height: 1.15, color: color);
+
+  @override
+  Widget build(BuildContext context) => LayoutBuilder(
+    builder: (context, constraints) {
+      final scaler = MediaQuery.textScalerOf(context);
+      final maxWidth = constraints.maxWidth;
+      final base = DefaultTextStyle.of(context).style;
+      for (final size in sizes) {
+        final style = base.merge(_style(size));
+        final words = text.split(' ');
+        final longest = words
+            .map((w) => _measure(w, style, scaler, double.infinity).width)
+            .fold<double>(0, (a, b) => a > b ? a : b);
+        if (longest > maxWidth) continue;
+        final all = _measure(text, style, scaler, maxWidth, maxLines: 2);
+        if (!all.didExceedMaxLines) {
+          return Text(text, key: textKey, style: style, maxLines: 2);
+        }
+      }
+      return FittedBox(
+        fit: BoxFit.scaleDown,
+        alignment: Alignment.centerLeft,
+        child: Text(
+          text,
+          key: textKey,
+          style: base.merge(_style(sizes.last)),
+          maxLines: 1,
+        ),
+      );
+    },
+  );
+
+  static TextPainter _measure(
+    String text,
+    TextStyle style,
+    TextScaler scaler,
+    double maxWidth, {
+    int? maxLines,
+  }) => TextPainter(
+    text: TextSpan(text: text, style: style),
+    textDirection: TextDirection.ltr,
+    textScaler: scaler,
+    maxLines: maxLines,
+  )..layout(maxWidth: maxWidth);
+}
+
+/// Один блок определения страны под карточкой «Сейчас». Четыре
+/// состояния: найден кандидат (флаг, «Похоже, вы здесь», Да / Нет);
+/// определение выключено (нет разрешения или геолокации — заметная
+/// карточка с «Включить»); тихое — строка последней автопроверки и
+/// «Проверить»; подсказка без данных.
+class _DetectRow extends StatelessWidget {
+  final Candidate? candidate;
+  final String? autoText;
+
+  /// denied или serviceOff — автопроверка упёрлась в разрешение или
+  /// выключенную геолокацию; null — всё в порядке.
+  final DetectOutcome? off;
+  final bool canDetect;
+  final bool detecting;
+  final VoidCallback onReview;
+  final VoidCallback onDismiss;
+  final VoidCallback onDetect;
+  final VoidCallback onEnable;
+  final VoidCallback onDismissOff;
+  const _DetectRow({
+    required this.candidate,
+    required this.autoText,
+    required this.off,
+    required this.canDetect,
+    required this.detecting,
+    required this.onReview,
+    required this.onDismiss,
+    required this.onDetect,
+    required this.onEnable,
+    required this.onDismissOff,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final l10n = context.l10n;
+    final colors = DomidayColors.of(context);
+    final scheme = Theme.of(context).colorScheme;
+    final candidate = this.candidate;
+    if (candidate != null) {
+      final name = countryName(context, candidate.code, candidate.code);
+      return Container(
+        key: const Key('candidateBanner'),
+        padding: const EdgeInsets.fromLTRB(14, 12, 10, 12),
+        decoration: BoxDecoration(
+          color: colors.soft,
+          borderRadius: BorderRadius.circular(18),
+        ),
+        child: Row(
+          children: [
+            CountryFlag(code: candidate.code, width: 36),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    l10n.candidateBanner(name),
+                    style: const TextStyle(
+                      fontSize: 15,
+                      fontWeight: FontWeight.w700,
+                      height: 1.3,
+                    ),
+                  ),
+                  Text(
+                    autoText ?? l10n.candidateHint,
+                    key: autoText == null ? null : const Key('autoStatus'),
+                    style: TextStyle(
+                      fontSize: 12.5,
+                      color: scheme.onSurfaceVariant,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(width: 8),
+            FilledButton(
+              key: const Key('candidateReview'),
+              onPressed: onReview,
+              style: FilledButton.styleFrom(
+                minimumSize: const Size(48, 42),
+                padding: const EdgeInsets.symmetric(horizontal: 14),
+              ),
+              child: Text(l10n.candidateYes),
+            ),
+            TextButton(
+              key: const Key('candidateDismiss'),
+              onPressed: onDismiss,
+              child: Text(l10n.candidateNo),
+            ),
+          ],
+        ),
+      );
+    }
+    if (!canDetect) return const SizedBox.shrink();
+    if (off case final off?) {
+      return Container(
+        key: const Key('detectOff'),
+        padding: const EdgeInsets.fromLTRB(16, 14, 16, 12),
+        decoration: BoxDecoration(
+          color: colors.soft,
+          borderRadius: BorderRadius.circular(18),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(Icons.location_off_outlined, color: scheme.primary),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    l10n.detectOffTitle,
+                    style: const TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.w700,
+                      height: 1.3,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 6),
+            Text(
+              off == DetectOutcome.serviceOff
+                  ? l10n.detectOffService
+                  : l10n.detectOffDenied,
+              style: const TextStyle(fontSize: 14, height: 1.4),
+            ),
+            const SizedBox(height: 10),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                FilledButton.icon(
+                  key: const Key('detectEnable'),
+                  onPressed: detecting ? null : onEnable,
+                  icon: const Icon(Icons.my_location_rounded),
+                  label: Text(l10n.detectOffEnable),
+                ),
+                TextButton(
+                  key: const Key('detectOffDismiss'),
+                  onPressed: onDismissOff,
+                  child: Text(l10n.detectOffDismiss),
+                ),
+              ],
+            ),
+          ],
+        ),
+      );
+    }
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 4),
+      child: Row(
+        children: [
+          Expanded(
+            child: Text(
+              autoText ?? l10n.detectHint,
+              key: autoText == null ? null : const Key('autoStatus'),
+              style: TextStyle(fontSize: 13.5, color: scheme.onSurfaceVariant),
+            ),
+          ),
+          const SizedBox(width: 10),
+          OutlinedButton(
+            key: const Key('detectNow'),
+            onPressed: detecting ? null : onDetect,
+            style: OutlinedButton.styleFrom(
+              minimumSize: const Size(48, 40),
+              padding: const EdgeInsets.symmetric(horizontal: 14),
+            ),
+            child: detecting
+                ? const SizedBox(
+                    width: 16,
+                    height: 16,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : Text(l10n.detectShort),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Итоги года плитками 2×2: известно, дома, вне дома, неизвестно.
+class _YearTiles extends StatelessWidget {
+  final YearSummary summary;
+  final String home;
+  final VoidCallback onGaps;
+  const _YearTiles({
+    required this.summary,
+    required this.home,
+    required this.onGaps,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = DomidayColors.of(context);
+    final l10n = context.l10n;
+    final tiles = [
+      _Tile(
+        key: const Key('knownTotal'),
+        label: l10n.tileKnown,
+        value: summary.known.length,
+        sub: l10n.tileKnownSub(summary.total),
+      ),
+      _Tile(
+        key: const Key('homeTotal'),
+        label: l10n.tileHome,
+        dot: colors.home,
+        value: summary.home.length,
+        sub: home,
+      ),
+      _Tile(
+        key: const Key('awayTotal'),
+        label: l10n.tileAway,
+        dot: colors.away,
+        value: summary.away.length,
+        sub: l10n.tileAwaySub(summary.overlap),
+      ),
+      _Tile(
+        key: const Key('unknownTotal'),
+        label: l10n.tileUnknown,
+        outline: colors.unknown,
+        value: summary.unknown,
+        action: l10n.checkGaps,
+        actionKey: const Key('previewGaps'),
+        onTap: onGaps,
+      ),
+    ];
+    return LayoutBuilder(
+      key: const Key('yearSummary'),
+      builder: (context, constraints) {
+        // На узком экране с крупным текстом две колонки рвут слова:
+        // считаем ширину в «условных» пикселях без масштаба текста.
+        final scale = MediaQuery.textScalerOf(context).scale(1);
+        final twoColumns = constraints.maxWidth / scale >= 300;
+        if (!twoColumns) {
+          return Column(
+            children: [
+              for (var i = 0; i < tiles.length; i++) ...[
+                if (i > 0) const SizedBox(height: 10),
+                tiles[i],
+              ],
+            ],
+          );
+        }
+        Widget row(_Tile a, _Tile b) => IntrinsicHeight(
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Expanded(child: a),
+              const SizedBox(width: 10),
+              Expanded(child: b),
+            ],
+          ),
+        );
+        return Column(
+          children: [
+            row(tiles[0], tiles[1]),
+            const SizedBox(height: 10),
+            row(tiles[2], tiles[3]),
+          ],
+        );
+      },
+    );
+  }
+}
+
+class _Tile extends StatelessWidget {
+  final String label;
+  final int value;
+  final String? sub;
+  final Color? dot;
+  final Color? outline;
+  final String? action;
+  final Key? actionKey;
+  final VoidCallback? onTap;
+  const _Tile({
+    super.key,
+    required this.label,
+    required this.value,
+    this.sub,
+    this.dot,
+    this.outline,
+    this.action,
+    this.actionKey,
+    this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final muted = TextStyle(fontSize: 13, color: scheme.onSurfaceVariant);
+    final body = Padding(
+      padding: const EdgeInsets.fromLTRB(16, 14, 16, 14),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              if (dot != null || outline != null)
+                Padding(
+                  padding: const EdgeInsets.only(right: 7),
+                  child: Container(
+                    width: 10,
+                    height: 10,
+                    decoration: BoxDecoration(
+                      color: dot,
+                      border: outline == null
+                          ? null
+                          : Border.all(color: outline!, width: 1.5),
+                      borderRadius: BorderRadius.circular(2),
+                    ),
+                  ),
+                ),
+              Flexible(child: Text(label, style: muted)),
+            ],
+          ),
+          const SizedBox(height: 2),
+          Text.rich(
+            TextSpan(
+              children: [
+                TextSpan(
+                  text: '$value',
+                  style: const TextStyle(
+                    fontSize: 30,
+                    fontWeight: FontWeight.w700,
+                    height: 1.15,
+                  ),
+                ),
+                TextSpan(
+                  text: ' ${context.l10n.daysUnit}',
+                  style: muted.copyWith(fontSize: 14),
+                ),
+              ],
+            ),
+          ),
+          if (sub != null) ...[
+            const SizedBox(height: 2),
+            Text(sub!, style: muted),
+          ],
+          if (action != null) ...[
+            const SizedBox(height: 8),
+            Row(
+              key: actionKey,
+              children: [
+                Flexible(
+                  child: Text(
+                    action!,
+                    style: const TextStyle(
+                      fontSize: 14,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 4),
+                const Icon(Icons.chevron_right_rounded, size: 18),
+              ],
+            ),
+          ],
+        ],
+      ),
+    );
+    final shape = RoundedRectangleBorder(
+      borderRadius: BorderRadius.circular(18),
+      side: outline == null
+          ? BorderSide.none
+          : BorderSide(color: outline!, width: 1.5),
+    );
+    return Material(
+      color: outline == null
+          ? Theme.of(context).cardTheme.color
+          : Colors.transparent,
+      shape: shape,
+      clipBehavior: Clip.antiAlias,
+      child: onTap == null ? body : InkWell(onTap: onTap, child: body),
+    );
+  }
+}
+
+enum StatusMode { onboarding, home, date, change, archive }
+
+Future<void> _openStatus(
+  BuildContext context,
+  JournalController controller,
+  StatusMode mode,
+) => Navigator.push<void>(
+  context,
+  MaterialPageRoute(
+    builder: (_) => StatusEditor(controller: controller, mode: mode),
+  ),
+);
+
+Future<void> _openTrip(
+  BuildContext context,
+  JournalController controller,
+  Trip trip,
+) => Navigator.push<void>(
+  context,
+  MaterialPageRoute(
+    builder: (_) => TripEditor(
+      trip: trip,
+      today: controller.today,
+      snapshot: () => controller.snapshot,
+      onSave: controller.commit,
+      onDelete: () => controller.commit(
+        controller.snapshot.copyWith(
+          trips: controller.snapshot.trips.where((t) => t.id != trip.id),
+        ),
+      ),
+    ),
+  ),
+);
+
+class StatusEditor extends StatefulWidget {
+  final JournalController controller;
+  final StatusMode mode;
+  final UndatedStay? archive;
+
+  /// Предзаполнение для смены страны из определения: страна и дата.
+  final String? initialCountry;
+  final Day? initialArrival;
+  const StatusEditor({
+    super.key,
+    required this.controller,
+    required this.mode,
+    this.archive,
+    this.initialCountry,
+    this.initialArrival,
+  });
+  @override
+  State<StatusEditor> createState() => _StatusEditorState();
+}
+
+class _StatusEditorState extends State<StatusEditor> {
+  final _form = GlobalKey<FormState>();
+  late final TextEditingController _home;
+  late final TextEditingController _country;
+  Day? _arrival;
+  bool _countryEdited = false;
+  bool _busy = false;
+  bool _dirty = false;
+  bool _allowPop = false;
+  String? _error;
+  bool get _onboarding => widget.mode == StatusMode.onboarding;
+  bool get _change => widget.mode == StatusMode.change;
+  String _title(AppLocalizations l10n) => switch (widget.mode) {
+    StatusMode.onboarding => l10n.titleOnboarding,
+    StatusMode.home => l10n.titleSettings,
+    StatusMode.date => l10n.titleArrivalDate,
+    StatusMode.change => l10n.titleChangeCountry,
+    StatusMode.archive => l10n.titleIncompleteRecord,
+  };
+
+  @override
+  void initState() {
+    super.initState();
+    final snapshot = widget.controller.snapshot;
+    _home = TextEditingController(text: snapshot.homeCountry ?? '');
+    _country = TextEditingController(
+      text: _change
+          ? (widget.initialCountry ?? '')
+          : (widget.archive?.country ?? snapshot.current?.country ?? ''),
+    );
+    _arrival = _change
+        ? (widget.initialArrival ?? widget.controller.today())
+        : (widget.mode == StatusMode.archive
+              ? null
+              : snapshot.current?.arrival);
+    _dirty = _change && widget.initialCountry != null;
+  }
+
+  @override
+  void dispose() {
+    _home.dispose();
+    _country.dispose();
+    super.dispose();
+  }
+
+  Future<void> _back() async {
+    if (_busy || _allowPop) return;
+    if (_dirty) {
+      final l10n = context.l10n;
+      final discard = await _confirm(
+        context,
+        l10n.leaveWithoutSaving,
+        l10n.unsavedChanges,
+        l10n.leave,
+      );
+      if (!discard || !mounted) return;
+    }
+    setState(() => _allowPop = true);
+    await WidgetsBinding.instance.endOfFrame;
+    if (mounted) Navigator.pop(context);
+  }
+
+  Future<void> _pickDate() async {
+    FocusScope.of(context).unfocus();
+    final today = widget.controller.today();
+    final last = widget.archive?.departure ?? today;
+    final initial = _arrival == null || _arrival!.compareTo(last) > 0
+        ? last
+        : _arrival!;
+    final l10n = context.l10n;
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: initial.localDate,
+      currentDate: today.localDate,
+      firstDate: DateTime(1900),
+      lastDate: last.localDate,
+      helpText: _change ? l10n.pickerMoveDate : l10n.pickerArrival,
+      cancelText: l10n.cancel,
+      confirmText: l10n.choose,
+    );
+    if (picked != null && mounted) {
+      setState(() {
+        _arrival = Day.fromDateTime(picked);
+        _dirty = true;
+        _error = null;
+      });
+    }
+  }
+
+  Future<void> _save() async {
+    if (_busy || !_form.currentState!.validate()) return;
+    FocusScope.of(context).unfocus();
+    final controller = widget.controller;
+    final snapshot = controller.snapshot;
+    final today = controller.today();
+    final l10n = context.l10n;
+    final match = CountryScope.of(context).match;
+    try {
+      final JournalSnapshot next;
+      switch (widget.mode) {
+        case StatusMode.onboarding:
+          next = snapshot.copyWith(
+            homeCountry: cleanText(_home.text),
+            homeCountryCode: match(_home.text),
+            current: CurrentStay(
+              id: _newId(),
+              country: cleanText(_country.text),
+              countryCode: match(_country.text),
+              arrival: _arrival,
+              confirmedOn: today,
+            ),
+          );
+        case StatusMode.home:
+          next = snapshot.copyWith(
+            homeCountry: cleanText(_home.text),
+            homeCountryCode: match(_home.text),
+          );
+        case StatusMode.date:
+          final current = snapshot.current!;
+          next = snapshot.copyWith(
+            current: CurrentStay(
+              id: current.id,
+              country: current.country,
+              arrival: _arrival,
+              confirmedOn: current.confirmedOn,
+              notBefore: current.notBefore,
+            ),
+          );
+        case StatusMode.change:
+          if (_arrival == null) {
+            throw const JournalError(JournalErrorCode.moveDateRequired);
+          }
+          next = snapshot.transition(
+            _country.text,
+            _arrival!,
+            today,
+            _newId(),
+            countryCode: match(_country.text),
+          );
+        case StatusMode.archive:
+          final archive = widget.archive!;
+          next = snapshot.copyWith(
+            undated: [
+              for (final stay in snapshot.undated)
+                if (stay.id != archive.id) stay,
+              if (_arrival == null)
+                UndatedStay(
+                  id: archive.id,
+                  country: cleanText(_country.text),
+                  countryCode: match(_country.text),
+                  departure: archive.departure,
+                ),
+            ],
+            trips: [
+              ...snapshot.trips,
+              if (_arrival != null)
+                Trip(
+                  id: archive.id,
+                  country: cleanText(_country.text),
+                  countryCode: match(_country.text),
+                  arrival: _arrival!,
+                  departure: archive.departure,
+                  note: l10n.archiveArrivalNote,
+                ),
+            ],
+          );
+      }
+      next.validate(today);
+      if (_change) {
+        final previous = snapshot.current!;
+        final confirmed = await _confirm(
+          context,
+          l10n.confirmMoveTitle,
+          '${l10n.endsLine(countryName(context, previous.countryCode, previous.country))}\n'
+          '${previous.arrival?.text(context) ?? l10n.arrivalUnknownShort} — ${_arrival!.text(context)}\n\n'
+          '${l10n.startsLine(cleanText(_country.text))}\n${l10n.fromDate(_arrival!.text(context))}\n\n'
+          '${previous.arrival == null ? '${l10n.archiveStaysNote} ' : ''}'
+          '${l10n.moveDayBothNote}',
+          l10n.confirmMove,
+        );
+        if (!confirmed || !mounted) return;
+      }
+      await _persist(next);
+    } on JournalError catch (e) {
+      if (mounted) setState(() => _error = describeError(context, e));
+    }
+  }
+
+  Future<void> _persist(JournalSnapshot next) async {
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    try {
+      await widget.controller.commit(next);
+      if (!mounted) return;
+      if (_onboarding) return;
+      setState(() {
+        _allowPop = true;
+        _busy = false;
+      });
+      await WidgetsBinding.instance.endOfFrame;
+      if (!mounted) return;
+      Navigator.pop(context);
+    } catch (_) {
+      if (mounted) {
+        setState(() {
+          _busy = false;
+          _error = context.l10n.saveFailedFormKept;
+        });
+      }
+    }
+  }
+
+  Future<void> _deleteArchive() async {
+    final l10n = context.l10n;
+    final confirmed = await _confirm(
+      context,
+      l10n.deleteIncompleteTitle,
+      l10n.deleteIncompleteBody(
+        countryName(
+          context,
+          widget.archive!.countryCode,
+          widget.archive!.country,
+        ),
+      ),
+      l10n.delete,
+    );
+    if (!confirmed || !mounted) return;
+    await _persist(
+      widget.controller.snapshot.copyWith(
+        undated: widget.controller.snapshot.undated.where(
+          (s) => s.id != widget.archive!.id,
+        ),
+      ),
+    );
+  }
+
+  /// Страна из определения (кандидат, который владелец не отклонил) —
+  /// первой в списке выбора.
+  String? _detectedCode(BuildContext context) {
+    final candidate = context
+        .findAncestorWidgetOfExactType<SettingsScope>()
+        ?.notifier
+        ?.candidate;
+    return candidate == null || candidate.dismissed ? null : candidate.code;
+  }
+
+  Widget _countryField(
+    TextEditingController controller,
+    String label,
+    String key,
+  ) => CountryField(
+    controller: controller,
+    fieldKey: Key(key),
+    label: label,
+    suggested: [
+      for (final code in widget.controller.snapshot.suggestedCodes(
+        detected: _detectedCode(context),
+      ))
+        // При смене страны прежняя не нужна: выбрать её нельзя.
+        if (widget.mode != StatusMode.change ||
+            code != widget.controller.snapshot.current?.countryCode)
+          code,
+    ],
+    helperText: context.l10n.anyCountryNameHelper,
+    enabled: !_busy,
+    maxLines: 3,
+    onChanged: (value) {
+      _dirty = true;
+      if (controller == _country) _countryEdited = true;
+      if (controller == _home && _onboarding && !_countryEdited) {
+        _country.text = value;
+      }
+    },
+  );
+
+  @override
+  Widget build(BuildContext context) {
+    final l10n = context.l10n;
+    return PopScope(
+      canPop: _onboarding ? !_busy : _allowPop,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop && !_onboarding) _back();
+      },
+      child: Scaffold(
+        appBar: AppBar(
+          title: Text(_title(l10n)),
+          leading: _onboarding
+              ? null
+              : IconButton(
+                  tooltip: l10n.back,
+                  onPressed: _busy ? null : _back,
+                  icon: const Icon(Icons.arrow_back),
+                ),
+          actions: [
+            if (_onboarding || widget.mode == StatusMode.home)
+              IconButton(
+                tooltip: l10n.aboutTooltip,
+                onPressed: _busy
+                    ? null
+                    : () => Navigator.push<void>(
+                        context,
+                        MaterialPageRoute(builder: (_) => const AboutPage()),
+                      ),
+                icon: const Icon(Icons.info_outlined),
+              ),
+          ],
+        ),
+        body: SafeArea(
+          child: Center(
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 720),
+              child: Form(
+                key: _form,
+                child: ListView(
+                  padding: const EdgeInsets.fromLTRB(20, 12, 20, 32),
+                  children: [
+                    if (_onboarding) ...[
+                      Text(
+                        l10n.onboardingHeadline,
+                        style: Theme.of(context).textTheme.headlineMedium
+                            ?.copyWith(fontWeight: FontWeight.w700),
+                      ),
+                      const SizedBox(height: 12),
+                      Text(l10n.onboardingIntro),
+                      if (BackupScope.of(context) != null) ...[
+                        const SizedBox(height: 16),
+                        Text(
+                          l10n.onboardingHaveHistory,
+                          style: Theme.of(context).textTheme.titleMedium
+                              ?.copyWith(fontWeight: FontWeight.w700),
+                        ),
+                        const SizedBox(height: 8),
+                        Wrap(
+                          spacing: 12,
+                          runSpacing: 8,
+                          children: [
+                            OutlinedButton.icon(
+                              key: const Key('onboardingRestore'),
+                              onPressed: _busy
+                                  ? null
+                                  : () => restoreBackup(
+                                      context,
+                                      widget.controller,
+                                      BackupScope.of(context)!,
+                                      pop: false,
+                                    ),
+                              icon: const Icon(Icons.restore),
+                              label: Text(l10n.onboardingRestore),
+                            ),
+                            if (ImportScope.of(context) != null)
+                              OutlinedButton.icon(
+                                key: const Key('onboardingImport'),
+                                onPressed: _busy
+                                    ? null
+                                    : () => startTimelineImport(
+                                        context,
+                                        widget.controller,
+                                      ),
+                                icon: const Icon(Icons.map_outlined),
+                                label: Text(l10n.onboardingImport),
+                              ),
+                          ],
+                        ),
+                        const SizedBox(height: 12),
+                        Text(l10n.onboardingFresh),
+                      ],
+                      if (widget.controller.snapshot.trips.isNotEmpty) ...[
+                        const SizedBox(height: 12),
+                        Text(
+                          l10n.previousTripsKept(
+                            widget.controller.snapshot.trips.length,
+                          ),
+                        ),
+                      ],
+                      const SizedBox(height: 24),
+                    ],
+                    if (_onboarding || widget.mode == StatusMode.home) ...[
+                      _countryField(_home, l10n.homeCountry, 'homeCountry'),
+                      const SizedBox(height: 8),
+                      Text(
+                        l10n.homeCountryHelper,
+                        style: const TextStyle(fontSize: 14),
+                      ),
+                      const SizedBox(height: 24),
+                    ],
+                    if (widget.mode == StatusMode.home) ...[
+                      const _LanguageSetting(),
+                      const SizedBox(height: 24),
+                      const _ThemeSetting(),
+                      const SizedBox(height: 24),
+                      const _AutoDetectSetting(),
+                      const SizedBox(height: 24),
+                      if (BackgroundScope.of(context) != null) ...[
+                        const _BackgroundSetting(),
+                        const SizedBox(height: 24),
+                      ],
+                      if (BackupScope.of(context) != null) ...[
+                        _BackupSetting(controller: widget.controller),
+                        const SizedBox(height: 24),
+                      ],
+                      if (BackupScope.of(context) != null &&
+                          ImportScope.of(context) != null) ...[
+                        _ImportSetting(controller: widget.controller),
+                        const SizedBox(height: 24),
+                      ],
+                      const FeedbackCard(
+                        siteKey: Key('settingsFeedbackSite'),
+                        emailKey: Key('settingsFeedbackEmail'),
+                      ),
+                      const SizedBox(height: 24),
+                      _ClearAllSetting(controller: widget.controller),
+                      const SizedBox(height: 24),
+                    ],
+                    if (_onboarding ||
+                        _change ||
+                        widget.mode == StatusMode.archive) ...[
+                      _countryField(
+                        _country,
+                        _change
+                            ? l10n.newCountry
+                            : widget.mode == StatusMode.archive
+                            ? l10n.recordCountry
+                            : l10n.currentCountry,
+                        'statusCountry',
+                      ),
+                      const SizedBox(height: 16),
+                    ],
+                    if (widget.mode == StatusMode.date) ...[
+                      Text(
+                        countryName(
+                          context,
+                          widget.controller.snapshot.current!.countryCode,
+                          widget.controller.snapshot.current!.country,
+                        ),
+                        style: Theme.of(context).textTheme.titleLarge,
+                      ),
+                      const SizedBox(height: 16),
+                      if (widget.controller.snapshot.current!.notBefore
+                          case final Day limit)
+                        Text(l10n.notBeforeNote(limit.text(context))),
+                    ],
+                    if (widget.mode == StatusMode.archive) ...[
+                      Text(
+                        l10n.archiveDepartureNote(
+                          widget.archive!.departure.text(context),
+                        ),
+                      ),
+                      const SizedBox(height: 16),
+                    ],
+                    if (widget.mode != StatusMode.home) ...[
+                      OutlinedButton.icon(
+                        key: const Key('statusArrival'),
+                        onPressed: _busy ? null : _pickDate,
+                        style: OutlinedButton.styleFrom(
+                          padding: const EdgeInsets.all(18),
+                        ),
+                        icon: const Icon(Icons.calendar_month_outlined),
+                        label: Text(
+                          '${_change ? l10n.moveLabel : l10n.arrivalLabel}: '
+                          '${_arrival?.text(context) ?? l10n.dateUnknown}',
+                        ),
+                      ),
+                      if (!_change)
+                        TextButton(
+                          key: const Key('unknownArrival'),
+                          onPressed: _busy || _arrival == null
+                              ? null
+                              : () => setState(() {
+                                  _arrival = null;
+                                  _dirty = true;
+                                }),
+                          child: Text(l10n.dontRememberDate),
+                        ),
+                      const SizedBox(height: 12),
+                      Text(
+                        _change ? l10n.changeHint : l10n.unknownDateHint,
+                        style: const TextStyle(fontSize: 14),
+                      ),
+                      const SizedBox(height: 24),
+                    ],
+                    if (_error != null) ...[
+                      Semantics(
+                        liveRegion: true,
+                        child: Text(
+                          _error!,
+                          key: const Key('statusError'),
+                          style: TextStyle(
+                            color: Theme.of(context).colorScheme.error,
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 16),
+                    ],
+                    FilledButton(
+                      key: const Key('saveStatus'),
+                      onPressed: _busy ? null : _save,
+                      child: Text(
+                        _busy
+                            ? l10n.saving
+                            : _change
+                            ? l10n.checkMove
+                            : _onboarding
+                            ? l10n.openDashboard
+                            : l10n.save,
+                      ),
+                    ),
+                    if (widget.mode == StatusMode.archive) ...[
+                      const SizedBox(height: 16),
+                      OutlinedButton.icon(
+                        onPressed: _busy ? null : _deleteArchive,
+                        icon: const Icon(Icons.delete_outline),
+                        label: Text(l10n.deleteIncomplete),
+                      ),
+                    ],
+                    const SizedBox(height: 16),
+                    Text(
+                      l10n.noBackupWarning,
+                      style: const TextStyle(fontSize: 14),
+                    ),
+                    if (_onboarding) ...[
+                      const SizedBox(height: 12),
+                      TextButton.icon(
+                        key: const Key('onboardingJournal'),
+                        onPressed: _busy
+                            ? null
+                            : () => Navigator.push<void>(
+                                context,
+                                MaterialPageRoute(
+                                  builder: (_) => JournalPage(
+                                    controller: widget.controller,
+                                  ),
+                                ),
+                              ),
+                        icon: const Icon(Icons.auto_stories_outlined),
+                        label: Text(l10n.openOldJournal),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Выбор языка интерфейса: системный, English, Русский. Применяется сразу
+/// после успешной записи settings.json; дневник не затрагивается.
+class _LanguageSetting extends StatelessWidget {
+  const _LanguageSetting();
+
+  @override
+  Widget build(BuildContext context) {
+    final l10n = context.l10n;
+    final settings = SettingsController.of(context);
+    final current = settings.settings.locale?.languageCode;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(l10n.language, style: Theme.of(context).textTheme.titleLarge),
+        const SizedBox(height: 10),
+        // Чипы переносятся на новую строку и не рвут слова на узком экране
+        // с крупным текстом, в отличие от SegmentedButton.
+        Wrap(
+          key: const Key('languageSetting'),
+          spacing: 8,
+          runSpacing: 8,
+          children: [
+            for (final (value, label) in [
+              ('system', l10n.languageSystem),
+              ('en', 'English'),
+              ('ru', 'Русский'),
+            ])
+              ChoiceChip(
+                label: Text(label),
+                selected: (current ?? 'system') == value,
+                onSelected: (_) => settings.setLocale(
+                  value == 'system' ? null : Locale(value),
+                ),
+              ),
+          ],
+        ),
+        const SizedBox(height: 8),
+        Text(l10n.languageHelper, style: const TextStyle(fontSize: 14)),
+      ],
+    );
+  }
+}
+
+/// Тема: системная, светлая, тёмная. Применяется сразу.
+class _ThemeSetting extends StatelessWidget {
+  const _ThemeSetting();
+
+  @override
+  Widget build(BuildContext context) {
+    final l10n = context.l10n;
+    final settings = SettingsController.of(context);
+    final current = settings.settings.themeMode;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(l10n.themeTitle, style: Theme.of(context).textTheme.titleLarge),
+        const SizedBox(height: 10),
+        Wrap(
+          key: const Key('themeSetting'),
+          spacing: 8,
+          runSpacing: 8,
+          children: [
+            for (final (mode, label) in [
+              (ThemeMode.system, l10n.themeSystem),
+              (ThemeMode.light, l10n.themeLight),
+              (ThemeMode.dark, l10n.themeDark),
+            ])
+              ChoiceChip(
+                label: Text(label),
+                selected: current == mode,
+                onSelected: (_) => settings.setThemeMode(mode),
+              ),
+          ],
+        ),
+      ],
+    );
+  }
+}
+
+/// Автопроверка страны при открытии приложения.
+class _AutoDetectSetting extends StatelessWidget {
+  const _AutoDetectSetting();
+
+  @override
+  Widget build(BuildContext context) {
+    final l10n = context.l10n;
+    final settings = SettingsController.of(context);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        SwitchListTile(
+          key: const Key('autoDetectSetting'),
+          contentPadding: EdgeInsets.zero,
+          title: Text(
+            l10n.autoDetectTitle,
+            style: Theme.of(context).textTheme.titleLarge,
+          ),
+          value: settings.settings.autoDetect,
+          onChanged: settings.setAutoDetect,
+        ),
+        _Helper(
+          short: l10n.autoDetectShort,
+          full: l10n.autoDetectHelper,
+          id: 'autoDetectHelper',
+        ),
+      ],
+    );
+  }
+}
+
+/// Фоновая проверка: включение требует «геолокация — всегда» и
+/// уведомления; иначе объясняем и открываем настройки приложения.
+class _BackgroundSetting extends StatefulWidget {
+  const _BackgroundSetting();
+  @override
+  State<_BackgroundSetting> createState() => _BackgroundSettingState();
+}
+
+class _BackgroundSettingState extends State<_BackgroundSetting>
+    with WidgetsBindingObserver {
+  bool _busy = false;
+
+  /// Одна попытка довершения на возврат в приложение или нажатие: запись
+  /// ошибки в настройки перестраивает экран, и без этого довершение
+  /// зацикливалось бы.
+  bool _finishTried = false;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // Вернулись из настроек Android на этот же экран — довести включение.
+    if (state == AppLifecycleState.resumed) {
+      _finishTried = false;
+      _finish();
+    }
+  }
+
+  Future<void> _toggle(bool enabled) async {
+    final settings = SettingsController.of(context);
+    final service = BackgroundScope.of(context)!;
+    final l10n = context.l10n;
+    _finishTried = false;
+    setState(() => _busy = true);
+    try {
+      if (!enabled) {
+        await service.cancel();
+        await settings.setBackgroundDetect(false);
+        return;
+      }
+      final state = await service.requestPermissions();
+      if (!mounted) return;
+      if (state != BackgroundPermissionState.locationNotAlways) {
+        // Без уведомлений режим всё равно включается: проверка идёт, а
+        // предупреждение с кнопкой стоит под переключателем.
+        await service.schedule();
+        await settings.setBackgroundDetect(true);
+        return;
+      }
+      // Намерение на диск: после выдачи разрешения в настройках Android
+      // приложение перезапустится и включит режим само.
+      await settings.setBackgroundRequested(true);
+      if (!mounted) return;
+      final open = await _confirm(
+        context,
+        l10n.backgroundTitle,
+        state == BackgroundPermissionState.locationNotAlways
+            ? l10n.backgroundNeedsAlways
+            : l10n.backgroundNeedsNotifications,
+        l10n.openAppSettings,
+      );
+      if (open) await service.openAppSettings();
+    } catch (e) {
+      await settings.markBackgroundRun(
+        'enableError',
+        DateTime.now(),
+        error: '$e'.substring(0, '$e'.length.clamp(0, 200)),
+      );
+      if (mounted) {
+        await _notice(
+          context,
+          l10n.backgroundTitle,
+          l10n.backgroundEnableFailed('$e'),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    // Вернулись из настроек без перезапуска процесса — доводим включение.
+    final settings = SettingsController.of(context);
+    if (settings.settings.backgroundRequested &&
+        !settings.settings.backgroundDetect &&
+        !_busy) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => _finish());
+    }
+  }
+
+  Future<void> _finish() async {
+    if (!mounted || _busy || _finishTried) return;
+    _finishTried = true;
+    final settings = SettingsController.of(context);
+    final service = BackgroundScope.of(context);
+    if (service == null) return;
+    if (!settings.settings.backgroundRequested ||
+        settings.settings.backgroundDetect) {
+      return;
+    }
+    await finishBackgroundEnable(service, settings);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final l10n = context.l10n;
+    final settings = SettingsController.of(context);
+    final on = settings.settings.backgroundDetect;
+    final requested = settings.settings.backgroundRequested && !on;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        SwitchListTile(
+          key: const Key('backgroundSetting'),
+          contentPadding: EdgeInsets.zero,
+          title: Text(
+            l10n.backgroundTitle,
+            style: Theme.of(context).textTheme.titleLarge,
+          ),
+          subtitle: Text(
+            on
+                ? l10n.backgroundStatusOn
+                : requested
+                ? l10n.backgroundStatusWaiting
+                : l10n.backgroundStatusOff,
+            key: const Key('backgroundStatus'),
+          ),
+          value: on,
+          onChanged: _busy ? null : _toggle,
+        ),
+        if (settings.settings.lastBackgroundError != null)
+          Text(
+            l10n.backgroundErrorDetail(settings.settings.lastBackgroundError!),
+            key: const Key('backgroundError'),
+            style: TextStyle(
+              fontSize: 13,
+              color: Theme.of(context).colorScheme.error,
+            ),
+          ),
+        // Ждём «всегда»: Android 11+ выдаёт его только в своих настройках,
+        // и владельцу нужен точный путь — плагин сам туда не ведёт.
+        if (requested)
+          Text(
+            l10n.backgroundHowToAlways,
+            key: const Key('backgroundHowTo'),
+            style: TextStyle(
+              fontSize: 14,
+              color: Theme.of(context).colorScheme.onSurfaceVariant,
+            ),
+          ),
+        const SizedBox(height: 6),
+        if (on) ...[
+          Text(
+            _lastRun(context, settings.settings),
+            key: const Key('backgroundLastRun'),
+            style: const TextStyle(fontSize: 14),
+          ),
+          if (settings.settings.backgroundLog.length > 1) ...[
+            const SizedBox(height: 6),
+            Text(
+              '${l10n.backgroundLogTitle} '
+              '${_logLine(context, settings.settings.backgroundLog)}',
+              key: const Key('backgroundLog'),
+              style: TextStyle(
+                fontSize: 13,
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
+              ),
+            ),
+          ],
+          const SizedBox(height: 10),
+          Wrap(
+            spacing: 10,
+            runSpacing: 8,
+            children: [
+              OutlinedButton.icon(
+                key: const Key('backgroundRunNow'),
+                onPressed: _busy ? null : _runNow,
+                icon: const Icon(Icons.play_arrow_outlined),
+                label: Text(l10n.backgroundRunNow),
+              ),
+              OutlinedButton.icon(
+                key: const Key('backgroundTestNotification'),
+                onPressed: _busy ? null : _testNotification,
+                icon: const Icon(Icons.notifications_active_outlined),
+                label: Text(l10n.backgroundTestNotification),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          _PermissionLine(service: BackgroundScope.of(context)!),
+          _BatteryLine(service: BackgroundScope.of(context)!),
+          const SizedBox(height: 10),
+        ],
+        _Helper(
+          short: l10n.backgroundShort,
+          full: l10n.backgroundHelper,
+          id: 'backgroundHelper',
+        ),
+      ],
+    );
+  }
+
+  /// Одноразовая задача WorkManager сейчас — результат появится в строке
+  /// «Последняя проверка» после возврата в приложение.
+  Future<void> _runNow() async {
+    final service = BackgroundScope.of(context)!;
+    final l10n = context.l10n;
+    final messenger = ScaffoldMessenger.of(context);
+    setState(() => _busy = true);
+    try {
+      await service.runNow();
+      messenger.showSnackBar(
+        SnackBar(content: Text(l10n.backgroundRunNowStarted)),
+      );
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _testNotification() async {
+    final service = BackgroundScope.of(context)!;
+    final l10n = context.l10n;
+    setState(() => _busy = true);
+    try {
+      await service.testNotification(
+        title: l10n.backgroundTestTitle,
+        body: l10n.backgroundTestBody,
+      );
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  /// «10:12 та же страна · 12:14 нет координат · …», новые справа.
+  String _logLine(BuildContext context, List<String> log) => log
+      .skip(log.length > 5 ? log.length - 5 : 0)
+      .map((e) {
+        final parts = e.split('|');
+        final at = DateTime.tryParse(parts.first);
+        final outcome = parts.length > 1 ? parts[1] : '';
+        return '${at == null ? '?' : _clock(at.toLocal())} '
+            '${_outcomeText(context, outcome)}';
+      })
+      .join(' · ');
+
+  static String _clock(DateTime t) =>
+      '${t.hour.toString().padLeft(2, '0')}:${t.minute.toString().padLeft(2, '0')}';
+
+  /// Когда и чем закончилась последняя фоновая проверка.
+  String _lastRun(BuildContext context, AppSettings s) {
+    final l10n = context.l10n;
+    final at = s.lastBackgroundRun;
+    if (at == null) return l10n.backgroundNeverRan;
+    return l10n.backgroundLastRun(
+      dateTimeText(context, at),
+      _outcomeText(context, s.lastBackgroundOutcome ?? ''),
+    );
+  }
+
+  String _outcomeText(BuildContext context, String outcome) {
+    final l10n = context.l10n;
+    return switch (outcome) {
+      'notified' => l10n.backgroundOutcomeNotified,
+      'sameOrSilenced' => l10n.backgroundOutcomeSame,
+      'alreadyNotified' => l10n.backgroundOutcomeAlreadyNotified,
+      'noLocation' => l10n.backgroundOutcomeNoLocation,
+      'noCountry' => l10n.backgroundOutcomeNoCountry,
+      'noProfile' => l10n.backgroundOutcomeNoProfile,
+      backgroundErrorOutcome => l10n.backgroundOutcomeError,
+      _ => outcome,
+    };
+  }
+}
+
+/// Довести включение фона после возврата из настроек Android: без
+/// запросов проверить разрешения; если не хватает только уведомлений —
+/// запросить их диалогом; без «всегда» — ждать дальше. Режим включается и
+/// при выключенных уведомлениях (предупреждение показывает экран).
+Future<bool> finishBackgroundEnable(
+  BackgroundService service,
+  SettingsController settings,
+) async {
+  try {
+    var state = await service.checkPermissions();
+    if (state == BackgroundPermissionState.notificationsOff) {
+      state = await service.requestPermissions();
+    }
+    if (state == BackgroundPermissionState.locationNotAlways) return false;
+    await service.schedule();
+    await settings.setBackgroundDetect(true);
+    return true;
+  } catch (e) {
+    // Исключение при включении раньше глоталось молча — теперь оно видно
+    // на экране настроек (строка «Ошибка: …»).
+    await settings.markBackgroundRun(
+      'enableError',
+      DateTime.now(),
+      error: '$e'.substring(0, '$e'.length.clamp(0, 200)),
+    );
+    return false;
+  }
+}
+
+/// Предупреждение, если фон включён, а уведомления запрещены: проверка
+/// идёт, но позвать владельца нечем.
+class _PermissionLine extends StatelessWidget {
+  final BackgroundService service;
+  const _PermissionLine({required this.service});
+  @override
+  Widget build(BuildContext context) {
+    final l10n = context.l10n;
+    final scheme = Theme.of(context).colorScheme;
+    return FutureBuilder<BackgroundPermissionState>(
+      future: service.checkPermissions(),
+      builder: (context, snapshot) {
+        final state = snapshot.data;
+        if (state == null || state == BackgroundPermissionState.granted) {
+          return const SizedBox.shrink();
+        }
+        return Padding(
+          padding: const EdgeInsets.only(bottom: 10),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                state == BackgroundPermissionState.notificationsOff
+                    ? l10n.backgroundNotificationsOffLine
+                    : l10n.backgroundNeedsAlways,
+                key: Key(
+                  state == BackgroundPermissionState.notificationsOff
+                      ? 'notificationsOff'
+                      : 'locationNotAlways',
+                ),
+                style: TextStyle(fontSize: 14, color: scheme.error),
+              ),
+              const SizedBox(height: 6),
+              OutlinedButton.icon(
+                key: const Key('permissionSettings'),
+                onPressed: service.openAppSettings,
+                icon: const Icon(Icons.settings_outlined),
+                label: Text(l10n.openAppSettings),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+}
+
+/// Строка про оптимизацию батареи: если система ограничивает фон,
+/// задачи WorkManager на Samsung могут не запускаться — подсказка и
+/// переход в настройки приложения (Батарея → Без ограничений).
+class _BatteryLine extends StatelessWidget {
+  final BackgroundService service;
+  const _BatteryLine({required this.service});
+  @override
+  Widget build(BuildContext context) {
+    final l10n = context.l10n;
+    final scheme = Theme.of(context).colorScheme;
+    return FutureBuilder<bool?>(
+      future: service.batteryUnrestricted(),
+      builder: (context, snapshot) {
+        final ok = snapshot.data;
+        if (ok == null) return const SizedBox.shrink();
+        if (ok) {
+          return Text(
+            l10n.backgroundBatteryOk,
+            key: const Key('batteryOk'),
+            style: TextStyle(fontSize: 13, color: scheme.onSurfaceVariant),
+          );
+        }
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              l10n.backgroundBatteryRestricted,
+              key: const Key('batteryRestricted'),
+              style: TextStyle(fontSize: 14, color: scheme.error),
+            ),
+            const SizedBox(height: 6),
+            OutlinedButton.icon(
+              key: const Key('batterySettings'),
+              onPressed: service.openAppSettings,
+              icon: const Icon(Icons.battery_saver_outlined),
+              label: Text(l10n.openAppSettings),
+            ),
+          ],
+        );
+      },
+    );
+  }
+}
+
+/// Резервная копия: сохранить файл в формате приложения и восстановить
+/// из него с заменой всей истории — только после подтверждения.
+class _BackupSetting extends StatefulWidget {
+  final JournalController controller;
+  const _BackupSetting({required this.controller});
+  @override
+  State<_BackupSetting> createState() => _BackupSettingState();
+}
+
+/// Сохранить копию через системный выбор папки. Возвращает имя файла или
+/// null, если владелец отменил выбор; при ошибке записи — исключение.
+/// Успех запоминается в настройках (дата последней копии).
+Future<String?> saveBackup(
+  BuildContext context,
+  JournalController controller,
+  BackupStore store,
+) async {
+  final settings = SettingsController.of(context);
+  final now = DateTime.now();
+  final name = backupFileName(now);
+  final written = await store.save(
+    name,
+    encodeBackup(controller.snapshot, now: now, appVersion: appVersionShort),
+  );
+  if (!written) return null;
+  await settings.markBackup(now);
+  return name;
+}
+
+class _BackupSettingState extends State<_BackupSetting> {
+  bool _busy = false;
+
+  Future<void> _save() async {
+    final store = BackupScope.of(context)!;
+    final l10n = context.l10n;
+    final messenger = ScaffoldMessenger.of(context);
+    setState(() => _busy = true);
+    try {
+      final name = await saveBackup(context, widget.controller, store);
+      if (name != null) {
+        messenger.showSnackBar(SnackBar(content: Text(l10n.backupSaved(name))));
+      }
+    } catch (_) {
+      if (mounted) {
+        await _notice(context, l10n.backupTitle, l10n.backupSaveFailed);
+      }
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _restore() async {
+    setState(() => _busy = true);
+    try {
+      await restoreBackup(
+        context,
+        widget.controller,
+        BackupScope.of(context)!,
+        pop: true,
+      );
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final l10n = context.l10n;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(l10n.backupTitle, style: Theme.of(context).textTheme.titleLarge),
+        const SizedBox(height: 8),
+        _Helper(
+          short: l10n.backupShort,
+          full: l10n.backupHelper,
+          id: 'backupHelper',
+        ),
+        const SizedBox(height: 8),
+        Text(
+          switch (SettingsController.of(context).settings.lastBackupAt) {
+            final DateTime at => l10n.backupLast(dateTimeText(context, at)),
+            null => l10n.backupNever,
+          },
+          key: const Key('backupLast'),
+          style: TextStyle(
+            fontSize: 14,
+            color: Theme.of(context).colorScheme.onSurfaceVariant,
+          ),
+        ),
+        const SizedBox(height: 12),
+        Wrap(
+          spacing: 12,
+          runSpacing: 8,
+          children: [
+            FilledButton.tonalIcon(
+              key: const Key('backupSave'),
+              onPressed: _busy ? null : _save,
+              icon: const Icon(Icons.save_alt),
+              label: Text(l10n.backupSave),
+            ),
+            OutlinedButton.icon(
+              key: const Key('backupRestore'),
+              onPressed: _busy ? null : _restore,
+              icon: const Icon(Icons.restore),
+              label: Text(l10n.backupRestore),
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+}
+
+/// Обзор одной страны: дни за выбранный год и за всё время, годовой
+/// календарь только с днями этой страны (тот же цвет, что на дашборде,
+/// листание лет и раскрытие месяца), ниже — её записи.
+class CountryPage extends StatefulWidget {
+  final JournalController controller;
+  final String countryKey;
+  final int year;
+
+  /// Слот цвета страны на дашборде; null — домашняя или без слота.
+  final int? slot;
+  const CountryPage({
+    super.key,
+    required this.controller,
+    required this.countryKey,
+    required this.year,
+    this.slot,
+  });
+
+  @override
+  State<CountryPage> createState() => _CountryPageState();
+}
+
+class _CountryPageState extends State<CountryPage> {
+  late int _year = widget.year;
+
+  @override
+  void initState() {
+    super.initState();
+    widget.controller.addListener(_changed);
+  }
+
+  @override
+  void dispose() {
+    widget.controller.removeListener(_changed);
+    super.dispose();
+  }
+
+  void _changed() {
+    if (mounted) setState(() {});
+  }
+
+  Future<void> _showDay(Day day) => showModalBottomSheet<void>(
+    context: context,
+    showDragHandle: true,
+    isScrollControlled: true,
+    builder: (sheetContext) => _DayCard(
+      day: day,
+      controller: widget.controller,
+      onOpen: (event) {
+        if (event.isCurrent) {
+          _openStatus(sheetContext, widget.controller, StatusMode.date);
+          return;
+        }
+        final trip = widget.controller.snapshot.trips
+            .where((t) => t.id == event.id)
+            .firstOrNull;
+        if (trip != null) _openTrip(sheetContext, widget.controller, trip);
+      },
+    ),
+  );
+
+  @override
+  Widget build(BuildContext context) {
+    final l10n = context.l10n;
+    final controller = widget.controller;
+    final snapshot = controller.snapshot;
+    final today = controller.today();
+    final key = widget.countryKey;
+    final trips =
+        snapshot.knownTrips(today).where((t) => t.countryKey == key).toList()
+          ..sort((a, b) => b.departure.compareTo(a.departure));
+    final sample = trips.firstOrNull;
+    final label = sample == null
+        ? key
+        : countryName(context, sample.countryCode, sample.country);
+    // Дневник только этой страны: календарь красит её дни и ничего больше.
+    final filtered = JournalSnapshot(
+      trips: snapshot.trips.where((t) => t.countryKey == key),
+      homeCountry: snapshot.homeCountry,
+      homeCountryCode: snapshot.homeCountryCode,
+      current: snapshot.current?.countryKey == key ? snapshot.current : null,
+    );
+    final summary = YearSummary(filtered, _year, today);
+    final yearDays = unionDays(trips, year: _year);
+    final allDays = unionDays(trips);
+    final colors = DomidayColors.of(context);
+    final swatch = key == snapshot.homeKey
+        ? colors.homeCell
+        : colors.countryColor(widget.slot ?? -1);
+    final muted = TextStyle(
+      fontSize: 14,
+      color: Theme.of(context).colorScheme.onSurfaceVariant,
+    );
+    return Scaffold(
+      appBar: AppBar(title: Text(label)),
+      body: SafeArea(
+        child: ListView(
+          key: const Key('countryScroll'),
+          padding: const EdgeInsets.fromLTRB(20, 12, 20, 32),
+          children: [
+            Row(
+              children: [
+                Container(
+                  width: 14,
+                  height: 14,
+                  decoration: BoxDecoration(
+                    color: swatch,
+                    borderRadius: BorderRadius.circular(4),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                if (sample?.countryCode != null) ...[
+                  CountryFlag(code: sample!.countryCode, width: 36),
+                  const SizedBox(width: 10),
+                ],
+                Expanded(
+                  child: Text(
+                    label,
+                    key: const Key('countryTitle'),
+                    style: display(size: 24, height: 1.15),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Text(
+              l10n.countryDaysLine(
+                l10n.daysCompact(yearDays),
+                _year,
+                l10n.daysCompact(allDays),
+              ),
+              key: const Key('countryDays'),
+              style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              key == snapshot.homeKey
+                  ? '${l10n.homeCountry} · ${l10n.recordsCount(trips.length)}'
+                  : l10n.recordsCount(trips.length),
+              style: muted,
+            ),
+            const SizedBox(height: 16),
+            Card(
+              clipBehavior: Clip.antiAlias,
+              child: Padding(
+                padding: const EdgeInsets.all(16),
+                child: YearCalendar(
+                  summary: summary,
+                  today: today,
+                  snapshot: filtered,
+                  slots: widget.slot == null ? const {} : {key: widget.slot!},
+                  onDayTap: _showDay,
+                  minYear: 1900,
+                  maxYear: today.year,
+                  onYearChange: (delta) {
+                    final next = (_year + delta).clamp(1900, today.year);
+                    if (next != _year) setState(() => _year = next);
+                  },
+                ),
+              ),
+            ),
+            const SizedBox(height: 8),
+            Text(l10n.countryCalendarHint, style: muted),
+            const SizedBox(height: 24),
+            _SectionHeader(
+              title: l10n.countryRecords,
+              meta: l10n.recordsCount(trips.length),
+            ),
+            const SizedBox(height: 12),
+            Card(
+              clipBehavior: Clip.antiAlias,
+              child: Column(
+                children: [
+                  for (var i = 0; i < trips.length; i++)
+                    _RecentRow(
+                      trip: trips[i],
+                      divider: i > 0,
+                      onTap: () => trips[i].id == snapshot.current?.id
+                          ? _openStatus(context, controller, StatusMode.date)
+                          : _openTrip(context, controller, trips[i]),
+                    ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 12),
+            Center(
+              child: TextButton.icon(
+                key: const Key('countryJournal'),
+                onPressed: () => Navigator.push<void>(
+                  context,
+                  MaterialPageRoute(
+                    builder: (_) => JournalPage(
+                      controller: controller,
+                      initialCountry: key,
+                    ),
+                  ),
+                ),
+                icon: const Icon(Icons.auto_stories_outlined),
+                label: Text(l10n.countryOpenJournal),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// «Поделиться итогами года»: предпросмотр карточки и кнопка. Картинка
+/// рендерится из виджета (RepaintBoundary → PNG) и отдаётся в системное
+/// меню; в ней только итоги — без координат и без записей целиком.
+class SharePage extends StatefulWidget {
+  final JournalController controller;
+  final int year;
+  final Map<String, int> slots;
+  const SharePage({
+    super.key,
+    required this.controller,
+    required this.year,
+    required this.slots,
+  });
+  @override
+  State<SharePage> createState() => _SharePageState();
+}
+
+class _SharePageState extends State<SharePage> {
+  final _card = GlobalKey();
+  bool _busy = false;
+
+  Future<void> _share() async {
+    final l10n = context.l10n;
+    final service = ShareScope.of(context)!;
+    final messenger = ScaffoldMessenger.of(context);
+    setState(() => _busy = true);
+    try {
+      final boundary =
+          _card.currentContext!.findRenderObject() as RenderRepaintBoundary;
+      final image = await boundary.toImage(pixelRatio: 3);
+      final data = await image.toByteData(format: ui.ImageByteFormat.png);
+      image.dispose();
+      final title = l10n.shareTitle(widget.year);
+      await service.shareImage(
+        data!.buffer.asUint8List(),
+        'domiday-${widget.year}.png',
+        title,
+      );
+    } catch (e) {
+      messenger.showSnackBar(SnackBar(content: Text(l10n.shareFailed('$e'))));
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final l10n = context.l10n;
+    final today = widget.controller.today();
+    final snapshot = widget.controller.snapshot;
+    final summary = YearSummary(snapshot, widget.year, today);
+    return Scaffold(
+      appBar: AppBar(title: Text(l10n.shareTitle(widget.year))),
+      body: SafeArea(
+        child: ListView(
+          padding: const EdgeInsets.fromLTRB(20, 12, 20, 32),
+          children: [
+            Center(
+              child: RepaintBoundary(
+                key: _card,
+                child: _YearCard(
+                  summary: summary,
+                  snapshot: snapshot,
+                  today: today,
+                  slots: widget.slots,
+                ),
+              ),
+            ),
+            const SizedBox(height: 12),
+            Text(
+              l10n.shareHint,
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                fontSize: 13,
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
+              ),
+            ),
+            const SizedBox(height: 16),
+            Center(
+              child: FilledButton.icon(
+                key: const Key('shareSend'),
+                onPressed: _busy ? null : _share,
+                icon: const Icon(Icons.ios_share_outlined),
+                label: Text(l10n.shareSend),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// Карточка итогов года: всегда светлая тема Domiday, фиксированная
+/// ширина 360 — одинаковая картинка на любом телефоне и в любой теме.
+class _YearCard extends StatelessWidget {
+  final YearSummary summary;
+  final JournalSnapshot snapshot;
+  final Day today;
+  final Map<String, int> slots;
+  const _YearCard({
+    required this.summary,
+    required this.snapshot,
+    required this.today,
+    required this.slots,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final l10n = context.l10n;
+    final theme = domidayTheme(Brightness.light);
+    final colors = theme.extension<DomidayColors>()!;
+    final muted = TextStyle(
+      fontSize: 13,
+      color: kCharcoal.withValues(alpha: .6),
+    );
+    final countries = summary.countries.take(5).toList();
+    final maxDays = countries.isEmpty ? 1 : countries.first.days;
+    Color swatch(CountryStat c) => c.key == snapshot.homeKey
+        ? colors.homeCell
+        : colors.countryColor(slots[c.key] ?? -1);
+    Widget stat(String label, int value, Color? dot, Color? outline) =>
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  if (dot != null || outline != null) ...[
+                    Container(
+                      width: 10,
+                      height: 10,
+                      decoration: BoxDecoration(
+                        color: dot,
+                        border: outline == null
+                            ? null
+                            : Border.all(color: outline, width: 1.5),
+                        borderRadius: BorderRadius.circular(3),
+                      ),
+                    ),
+                    const SizedBox(width: 6),
+                  ],
+                  Flexible(
+                    child: Text(
+                      label,
+                      style: muted,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 2),
+              Text(
+                l10n.daysCompact(value),
+                style: display(size: 22, height: 1.1, color: kCharcoal),
+              ),
+            ],
+          ),
+        );
+    return Theme(
+      data: theme,
+      child: MediaQuery(
+        // Картинка не зависит от размера шрифта на телефоне.
+        data: MediaQuery.of(context).copyWith(textScaler: TextScaler.noScaling),
+        child: Container(
+          key: const Key('yearCard'),
+          width: 360,
+          padding: const EdgeInsets.fromLTRB(24, 22, 24, 20),
+          decoration: BoxDecoration(
+            color: kCream,
+            borderRadius: BorderRadius.circular(24),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Row(
+                children: [
+                  const DomidayLogo(size: 26),
+                  const SizedBox(width: 8),
+                  Text(
+                    'Domiday',
+                    style: display(size: 18, height: 1.1, color: kCharcoal),
+                  ),
+                  const Spacer(),
+                  Text(
+                    '${summary.year}',
+                    style: display(size: 34, height: 1.0, color: kCharcoal),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 4),
+              Align(
+                alignment: Alignment.centerRight,
+                child: Text(
+                  l10n.periodLine(
+                    Day(summary.year, 1, 1).text(context),
+                    summary.through.text(context),
+                    l10n.daysCompact(summary.total),
+                  ),
+                  style: muted,
+                ),
+              ),
+              const SizedBox(height: 18),
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  stat(l10n.tileHome, summary.home.length, colors.home, null),
+                  stat(l10n.tileAway, summary.away.length, colors.away, null),
+                  stat(l10n.tileUnknown, summary.unknown, null, colors.unknown),
+                ],
+              ),
+              if (countries.isNotEmpty) ...[
+                const SizedBox(height: 18),
+                Text(
+                  l10n.byCountry,
+                  style: display(size: 16, height: 1.1, color: kCharcoal),
+                ),
+                const SizedBox(height: 8),
+                for (final c in countries)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 8),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            Container(
+                              width: 10,
+                              height: 10,
+                              decoration: BoxDecoration(
+                                color: swatch(c),
+                                borderRadius: BorderRadius.circular(3),
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            if (c.code != null) ...[
+                              CountryFlag(code: c.code, width: 20),
+                              const SizedBox(width: 8),
+                            ],
+                            Expanded(
+                              child: Text(
+                                countryName(context, c.code, c.label),
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(
+                                  fontSize: 15,
+                                  fontWeight: FontWeight.w700,
+                                  color: kCharcoal,
+                                ),
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            Text(
+                              l10n.daysCompact(c.days),
+                              style: const TextStyle(
+                                fontSize: 15,
+                                fontWeight: FontWeight.w700,
+                                color: kCharcoal,
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 4),
+                        Padding(
+                          padding: const EdgeInsets.only(left: 18),
+                          child: LinearProgressIndicator(
+                            value: (c.days / maxDays).clamp(0, 1),
+                            minHeight: 5,
+                            color: swatch(c),
+                            backgroundColor: colors.track,
+                            borderRadius: BorderRadius.circular(3),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+              ],
+              const SizedBox(height: 10),
+              Text(l10n.shareFooter, style: muted),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Пояснение к пункту настроек: одна строка и «Подробнее», под которым
+/// полный текст. Экран короче, переключатели видны сразу.
+class _Helper extends StatefulWidget {
+  final String short;
+  final String full;
+  final String id;
+  const _Helper({required this.short, required this.full, required this.id});
+  @override
+  State<_Helper> createState() => _HelperState();
+}
+
+class _HelperState extends State<_Helper> {
+  bool _open = false;
+  @override
+  Widget build(BuildContext context) {
+    final l10n = context.l10n;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(widget.short, style: const TextStyle(fontSize: 14)),
+        if (_open)
+          Padding(
+            padding: const EdgeInsets.only(top: 6),
+            child: Text(
+              widget.full,
+              key: Key('helper-${widget.id}'),
+              style: TextStyle(
+                fontSize: 14,
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
+              ),
+            ),
+          ),
+        Align(
+          alignment: Alignment.centerLeft,
+          child: TextButton(
+            key: Key('more-${widget.id}'),
+            style: TextButton.styleFrom(
+              padding: EdgeInsets.zero,
+              minimumSize: const Size(0, 32),
+              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+            ),
+            onPressed: () => setState(() => _open = !_open),
+            child: Text(_open ? l10n.lessDetails : l10n.moreDetails),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+/// Напоминание о копии на дашборде: данные только на телефоне, копии не
+/// было или она старше месяца. «Позже» откладывает на месяц.
+class _BackupNudge extends StatefulWidget {
+  final JournalController controller;
+  final DateTime Function() now;
+  const _BackupNudge({required this.controller, required this.now});
+  @override
+  State<_BackupNudge> createState() => _BackupNudgeState();
+}
+
+class _BackupNudgeState extends State<_BackupNudge> {
+  bool _busy = false;
+
+  Future<void> _save() async {
+    final l10n = context.l10n;
+    final messenger = ScaffoldMessenger.of(context);
+    setState(() => _busy = true);
+    try {
+      final name = await saveBackup(
+        context,
+        widget.controller,
+        BackupScope.of(context)!,
+      );
+      if (name != null) {
+        messenger.showSnackBar(SnackBar(content: Text(l10n.backupSaved(name))));
+      }
+    } catch (_) {
+      if (mounted) {
+        await _notice(context, l10n.backupTitle, l10n.backupSaveFailed);
+      }
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final l10n = context.l10n;
+    final scheme = Theme.of(context).colorScheme;
+    final last = SettingsController.of(context).settings.lastBackupAt;
+    return Card(
+      key: const Key('backupNudge'),
+      color: scheme.secondaryContainer,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 14, 16, 8),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(
+                  Icons.save_alt,
+                  size: 20,
+                  color: scheme.onSecondaryContainer,
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    l10n.backupNudgeTitle,
+                    style: const TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 6),
+            Text(
+              last == null
+                  ? l10n.backupNudgeBodyNever
+                  : l10n.backupNudgeBody(dateTimeText(context, last)),
+              style: const TextStyle(fontSize: 14),
+            ),
+            const SizedBox(height: 4),
+            Wrap(
+              spacing: 4,
+              children: [
+                TextButton.icon(
+                  key: const Key('backupNudgeSave'),
+                  onPressed: _busy ? null : _save,
+                  icon: const Icon(Icons.save_alt, size: 18),
+                  label: Text(l10n.backupSave),
+                ),
+                TextButton(
+                  key: const Key('backupNudgeLater'),
+                  onPressed: _busy
+                      ? null
+                      : () => SettingsController.of(context).snoozeBackupNudge(
+                          widget.now().add(AppSettings.backupNudgeAfter),
+                        ),
+                  child: Text(l10n.backupNudgeLater),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// «Очистить всё»: возврат к первому запуску. Удаление явное и видимое:
+/// диалог с числом записей, предложение сначала сохранить копию, красная
+/// кнопка. Ничего не удаляется без подтверждения.
+class _ClearAllSetting extends StatefulWidget {
+  final JournalController controller;
+  const _ClearAllSetting({required this.controller});
+  @override
+  State<_ClearAllSetting> createState() => _ClearAllSettingState();
+}
+
+class _ClearAllSettingState extends State<_ClearAllSetting> {
+  bool _busy = false;
+
+  Future<void> _clear() async {
+    final l10n = context.l10n;
+    final settings = SettingsController.of(context);
+    final background = BackgroundScope.of(context);
+    final navigator = Navigator.of(context);
+    final messenger = ScaffoldMessenger.of(context);
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (_) => _ClearAllDialog(
+        controller: widget.controller,
+        store: BackupScope.of(context),
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    setState(() => _busy = true);
+    try {
+      // Фоновые задачи снимаются до записи: пустому дневнику проверять
+      // нечего; затем дневник и настройки — как при первом запуске.
+      await background?.cancel();
+      await widget.controller.commit(JournalSnapshot());
+      await settings.reset();
+      messenger.showSnackBar(SnackBar(content: Text(l10n.clearAllDone)));
+      navigator.popUntil((route) => route.isFirst);
+    } catch (e) {
+      if (mounted) {
+        await _notice(context, l10n.clearAllTitle, l10n.clearAllFailed('$e'));
+      }
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final l10n = context.l10n;
+    final scheme = Theme.of(context).colorScheme;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(l10n.clearAllTitle, style: Theme.of(context).textTheme.titleLarge),
+        const SizedBox(height: 8),
+        _Helper(
+          short: l10n.clearAllShort,
+          full: l10n.clearAllHelper,
+          id: 'clearAllHelper',
+        ),
+        const SizedBox(height: 12),
+        OutlinedButton.icon(
+          key: const Key('clearAll'),
+          onPressed: _busy ? null : _clear,
+          style: OutlinedButton.styleFrom(
+            foregroundColor: scheme.error,
+            side: BorderSide(color: scheme.error),
+          ),
+          icon: const Icon(Icons.delete_forever_outlined),
+          label: Text(l10n.clearAllButton),
+        ),
+      ],
+    );
+  }
+}
+
+class _ClearAllDialog extends StatefulWidget {
+  final JournalController controller;
+  final BackupStore? store;
+  const _ClearAllDialog({required this.controller, required this.store});
+  @override
+  State<_ClearAllDialog> createState() => _ClearAllDialogState();
+}
+
+class _ClearAllDialogState extends State<_ClearAllDialog> {
+  bool _busy = false;
+  String? _savedName;
+  bool _saveFailed = false;
+
+  Future<void> _backup() async {
+    setState(() {
+      _busy = true;
+      _saveFailed = false;
+    });
+    try {
+      final name = await saveBackup(context, widget.controller, widget.store!);
+      if (mounted) setState(() => _savedName = name);
+    } catch (_) {
+      if (mounted) setState(() => _saveFailed = true);
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final l10n = context.l10n;
+    final scheme = Theme.of(context).colorScheme;
+    final snapshot = widget.controller.snapshot;
+    return AlertDialog(
+      key: const Key('clearAllDialog'),
+      scrollable: true,
+      title: Text(l10n.clearAllConfirmTitle),
+      content: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(
+            l10n.clearAllConfirmBody(
+              l10n.recordsCount(
+                snapshot.trips.length + snapshot.undated.length,
+              ),
+            ),
+          ),
+          if (_savedName != null) ...[
+            const SizedBox(height: 12),
+            Text(
+              l10n.backupSaved(_savedName!),
+              key: const Key('clearAllSaved'),
+              style: TextStyle(color: scheme.primary),
+            ),
+          ],
+          if (_saveFailed) ...[
+            const SizedBox(height: 12),
+            Text(l10n.backupSaveFailed, style: TextStyle(color: scheme.error)),
+          ],
+        ],
+      ),
+      actions: [
+        TextButton(
+          onPressed: _busy ? null : () => Navigator.pop(context, false),
+          child: Text(l10n.cancel),
+        ),
+        if (widget.store != null && _savedName == null)
+          TextButton(
+            key: const Key('clearAllBackup'),
+            onPressed: _busy ? null : _backup,
+            child: Text(l10n.clearAllBackupFirst),
+          ),
+        FilledButton(
+          key: const Key('clearAllConfirm'),
+          onPressed: _busy ? null : () => Navigator.pop(context, true),
+          style: FilledButton.styleFrom(
+            backgroundColor: scheme.error,
+            foregroundColor: scheme.onError,
+          ),
+          child: Text(l10n.clearAllAction),
+        ),
+      ],
+    );
+  }
+}
+
+/// Восстановление из файла копии: выбор файла, разбор, подтверждение с
+/// числом поездок, полная замена истории одной записью. [pop] — уйти с
+/// экрана настроек после успеха (при онбординге экран заменится сам).
+Future<void> restoreBackup(
+  BuildContext context,
+  JournalController controller,
+  BackupStore store, {
+  required bool pop,
+}) async {
+  final l10n = context.l10n;
+  final messenger = ScaffoldMessenger.of(context);
+  try {
+    final pick = await store.open();
+    if (pick == null || !context.mounted) return;
+    final BackupInfo info;
+    try {
+      info = decodeBackup(pick.contents, controller.today());
+    } on BackupError catch (e) {
+      await _notice(context, l10n.backupErrorTitle, switch (e.code) {
+        BackupErrorCode.notBackup => l10n.backupErrorNotBackup,
+        BackupErrorCode.newer => l10n.backupErrorNewer,
+        BackupErrorCode.corrupt => l10n.backupErrorCorrupt,
+      });
+      return;
+    }
+    if (!context.mounted) return;
+    final created = info.createdAt;
+    final ok = await _confirm(
+      context,
+      l10n.backupRestoreTitle,
+      l10n.backupRestoreConfirm(
+        pick.name,
+        l10n.backupTrips(info.snapshot.trips.length),
+        created == null
+            ? l10n.backupUnknownDate
+            : dateTimeText(context, created),
+        info.appVersion ?? '?',
+        l10n.backupTrips(controller.snapshot.trips.length),
+      ),
+      l10n.backupRestoreAction,
+    );
+    if (!ok || !context.mounted) return;
+    await controller.commit(info.snapshot);
+    if (!context.mounted) return;
+    // Восстановились из копии — значит, копия есть: дата последней копии
+    // равна дате файла, напоминание «копии ещё не было» не показывается.
+    await SettingsController.of(context)
+        .markBackup(info.createdAt ?? DateTime.now());
+    if (!context.mounted) return;
+    messenger.showSnackBar(
+      SnackBar(
+        content: Text(
+          l10n.backupRestored(l10n.backupTrips(info.snapshot.trips.length)),
+        ),
+      ),
+    );
+    if (pop) Navigator.pop(context);
+  } on JournalError catch (e) {
+    if (context.mounted) {
+      await _notice(context, l10n.backupErrorTitle, describeError(context, e));
+    }
+  } catch (_) {
+    if (context.mounted) {
+      await _notice(context, l10n.backupErrorTitle, l10n.backupErrorCorrupt);
+    }
+  }
+}
+
+/// Импорт истории Google Maps из настроек.
+class _ImportSetting extends StatelessWidget {
+  final JournalController controller;
+  const _ImportSetting({required this.controller});
+  @override
+  Widget build(BuildContext context) {
+    final l10n = context.l10n;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          l10n.importSectionTitle,
+          style: Theme.of(context).textTheme.titleLarge,
+        ),
+        const SizedBox(height: 8),
+        _Helper(
+          short: l10n.importShort,
+          full: l10n.importHelper,
+          id: 'importHelper',
+        ),
+        const SizedBox(height: 12),
+        FilledButton.tonalIcon(
+          key: const Key('importPick'),
+          onPressed: () => startTimelineImport(context, controller),
+          icon: const Icon(Icons.map_outlined),
+          label: Text(l10n.importPick),
+        ),
+      ],
+    );
+  }
+}
+
+Future<void> _notice(BuildContext context, String title, String text) =>
+    showDialog<void>(
+      context: context,
+      builder: (context) => AlertDialog(
+        scrollable: true,
+        title: Text(title),
+        content: Text(text),
+        actions: [
+          FilledButton(
+            onPressed: () => Navigator.pop(context),
+            child: Text(context.l10n.done),
+          ),
+        ],
+      ),
+    );
+
+Future<bool> _confirm(
+  BuildContext context,
+  String title,
+  String text,
+  String action,
+) async =>
+    await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        scrollable: true,
+        title: Text(title),
+        content: Text(text),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: Text(context.l10n.cancel),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: Text(action),
+          ),
+        ],
+      ),
+    ) ==
+    true;
+
+class _UndatedCard extends StatelessWidget {
+  final UndatedStay stay;
+  final JournalController controller;
+  const _UndatedCard({required this.stay, required this.controller});
+  @override
+  Widget build(BuildContext context) => Card(
+    child: InkWell(
+      key: Key('undated-${stay.id}'),
+      borderRadius: BorderRadius.circular(22),
+      onTap: () => Navigator.push<void>(
+        context,
+        MaterialPageRoute(
+          builder: (_) => StatusEditor(
+            controller: controller,
+            mode: StatusMode.archive,
+            archive: stay,
+          ),
+        ),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(22),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              countryName(context, stay.countryCode, stay.country),
+              style: Theme.of(context).textTheme.titleLarge,
+            ),
+            const SizedBox(height: 8),
+            Text(context.l10n.archiveCardLine(stay.departure.text(context))),
+            const SizedBox(height: 8),
+            Text(
+              context.l10n.archiveCardNote,
+              style: const TextStyle(fontSize: 14),
+            ),
+            const SizedBox(height: 12),
+            Text(context.l10n.clarifyOrDelete),
+            const Icon(Icons.arrow_forward_rounded, size: 20),
+          ],
+        ),
+      ),
+    ),
+  );
+}
+
+class GapPreviewPage extends StatefulWidget {
+  final JournalController controller;
+  final int year;
+  const GapPreviewPage({
+    super.key,
+    required this.controller,
+    required this.year,
+  });
+  @override
+  State<GapPreviewPage> createState() => _GapPreviewPageState();
+}
+
+class _GapPreviewPageState extends State<GapPreviewPage> {
+  late final HomeFillPreview _preview;
+  bool _busy = false;
+  bool _done = false;
+  String? _error;
+  @override
+  void initState() {
+    super.initState();
+    _preview = HomeFillPreview(
+      widget.controller.snapshot,
+      widget.year,
+      widget.controller.today(),
+    );
+  }
+
+  Future<void> _save() async {
+    if (_busy || _done) return;
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    try {
+      final next = _preview.confirm(
+        widget.controller.snapshot,
+        widget.controller.today(),
+        _newId,
+        note: context.l10n.gapFillNote(
+          _preview.year,
+          countryName(
+            context,
+            _preview.source.homeCountryCode,
+            _preview.source.homeCountry ?? '',
+          ),
+        ),
+      );
+      await widget.controller.commit(next);
+      if (mounted) {
+        setState(() {
+          _done = true;
+          _busy = false;
+        });
+      }
+    } catch (_) {
+      if (mounted) {
+        setState(() {
+          _busy = false;
+          _error = context.l10n.gapsSaveFailed;
+        });
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final l10n = context.l10n;
+    return PopScope(
+      canPop: !_busy,
+      child: Scaffold(
+        appBar: AppBar(title: Text(l10n.gapsTitle)),
+        body: SafeArea(
+          child: Center(
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 720),
+              child: ListView(
+                padding: const EdgeInsets.all(20),
+                children: [
+                  Text(
+                    _done ? l10n.gapsDone : l10n.gapsCheckFirst,
+                    style: Theme.of(context).textTheme.headlineMedium
+                        ?.copyWith(fontWeight: FontWeight.w700),
+                  ),
+                  const SizedBox(height: 16),
+                  Text(
+                    l10n.gapsYearHome(
+                      _preview.year,
+                      countryName(
+                        context,
+                        _preview.source.homeCountryCode,
+                        _preview.source.homeCountry ?? '',
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  Text(l10n.gapsExplain),
+                  const SizedBox(height: 20),
+                  if (_preview.gaps.isEmpty) Text(l10n.gapsNone),
+                  for (final gap in _preview.gaps)
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 14),
+                      child: Card(
+                        child: Padding(
+                          padding: const EdgeInsets.all(18),
+                          child: Text(
+                            '${gap.start.text(context)} — ${gap.end.text(context)}\n'
+                            '${l10n.daysCompact(gap.days)}',
+                          ),
+                        ),
+                      ),
+                    ),
+                  if (_preview.gaps.isNotEmpty) ...[
+                    Text(
+                      l10n.gapsTotal(
+                        l10n.daysCompact(_preview.days),
+                        _preview.gaps.length,
+                      ),
+                      key: const Key('gapCount'),
+                      style: Theme.of(context).textTheme.titleLarge,
+                    ),
+                    const SizedBox(height: 16),
+                    Text(
+                      _done
+                          ? l10n.gapsDoneNote
+                          : l10n.gapsConfirmNote(
+                              countryName(
+                                context,
+                                _preview.source.homeCountryCode,
+                                _preview.source.homeCountry ?? '',
+                              ),
+                            ),
+                    ),
+                    const SizedBox(height: 20),
+                    if (_error != null) ...[
+                      Text(
+                        _error!,
+                        key: const Key('gapError'),
+                        style: TextStyle(
+                          color: Theme.of(context).colorScheme.error,
+                        ),
+                      ),
+                      const SizedBox(height: 16),
+                    ],
+                    if (!_done)
+                      FilledButton(
+                        key: const Key('confirmGaps'),
+                        onPressed: _busy ? null : _save,
+                        child: Text(
+                          _busy ? l10n.saving : l10n.gapsConfirmButton,
+                        ),
+                      ),
+                  ],
+                  const SizedBox(height: 12),
+                  TextButton(
+                    onPressed: _busy ? null : () => Navigator.pop(context),
+                    child: Text(_done ? l10n.done : l10n.gapsCancel),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Нижняя панель дня: дата, список записей, переход к записи по id.
+class _DayCard extends StatelessWidget {
+  final Day day;
+  final JournalController controller;
+  final ValueChanged<DayEvent> onOpen;
+  const _DayCard({
+    required this.day,
+    required this.controller,
+    required this.onOpen,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final l10n = context.l10n;
+    final scheme = Theme.of(context).colorScheme;
+    final muted = TextStyle(fontSize: 13, color: scheme.onSurfaceVariant);
+    return ListenableBuilder(
+      listenable: controller,
+      builder: (context, _) {
+        final events = eventsOn(controller.snapshot, day, controller.today());
+        return SafeArea(
+          child: Semantics(
+            label: l10n.dayCardSemantics(day.text(context), events.length),
+            child: ConstrainedBox(
+              constraints: BoxConstraints(
+                maxHeight: MediaQuery.sizeOf(context).height * .7,
+              ),
+              child: Column(
+                key: const Key('dayCard'),
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(24, 4, 24, 12),
+                    child: Text(
+                      day.text(context),
+                      style: Theme.of(context).textTheme.titleLarge,
+                    ),
+                  ),
+                  if (events.isEmpty)
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(24, 0, 24, 24),
+                      child: Text(l10n.dayCardEmpty),
+                    )
+                  else
+                    Flexible(
+                      child: ListView(
+                        shrinkWrap: true,
+                        padding: const EdgeInsets.only(bottom: 8),
+                        children: [
+                          for (final e in events)
+                            ListTile(
+                              key: Key('dayEvent-${e.id}'),
+                              title: Text(
+                                e.city.isEmpty
+                                    ? countryName(
+                                        context,
+                                        e.countryCode,
+                                        e.country,
+                                      )
+                                    : '${countryName(context, e.countryCode, e.country)} · ${e.city}',
+                              ),
+                              subtitle: Text(
+                                '${e.isCurrent
+                                    ? l10n.dayCardCurrent
+                                    : e.kind == TripKind.transit
+                                    ? l10n.kindTransit
+                                    : l10n.kindStay}'
+                                ' · ${e.start.text(context)}'
+                                '${e.end == null ? '' : ' — ${e.end!.text(context)}'}',
+                                style: muted,
+                              ),
+                              trailing: const Icon(Icons.chevron_right_rounded),
+                              onTap: () => onOpen(e),
+                            ),
+                        ],
+                      ),
+                    ),
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(24, 4, 24, 16),
+                    child: Text(l10n.dayCardHint, style: muted),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+}

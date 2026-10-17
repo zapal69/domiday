@@ -1816,4 +1816,25 @@ class AppLocalizationsEn extends AppLocalizations {
   @override
   String get mapEmpty =>
       'Countries you have been to will be coloured here. Add trips in the journal or import your history from Google Maps.';
+
+  @override
+  String get feedbackTitle => 'Feedback and suggestions';
+
+  @override
+  String get feedbackBody =>
+      'Found a bug, or something is missing? Write to me: I read every message and keep improving the app. The site or your mail app opens in a separate window; Domiday itself never goes online.';
+
+  @override
+  String get feedbackSite => 'Write on the website';
+
+  @override
+  String get feedbackSiteHint => 'Feedback form, no sign-up';
+
+  @override
+  String get feedbackEmail => 'Write by email';
+
+  @override
+  String feedbackMailSubject(String version) {
+    return 'Domiday $version: feedback';
+  }
 }

@@ -38,9 +38,9 @@ part 'map_page.dart';
 part 'year_review.dart';
 
 /// Код версии из pubspec (versionCode): поднимать вместе с версией.
-const appVersionCode = 44;
+const appVersionCode = 45;
 const appVersion = '$appVersionShort ($appVersionCode)';
-const appVersionShort = '1.0.1';
+const appVersionShort = '1.0.2';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -1615,11 +1615,87 @@ class _TripEditorState extends State<TripEditor> {
   );
 }
 
+/// Замечания и предложения: карточка с двумя действиями — форма на сайте
+/// (раздел обратной связи по языку интерфейса, версия подставляется в
+/// адрес) и письмо с версией в теме. Открываются в других приложениях;
+/// Domiday сам в сеть не ходит. Одна и та же на «О дневнике» и в настройках.
+class FeedbackCard extends StatelessWidget {
+  final Key siteKey;
+  final Key emailKey;
+  const FeedbackCard({
+    super.key,
+    this.siteKey = const Key('feedbackSite'),
+    this.emailKey = const Key('feedbackEmail'),
+  });
+
+  static const email = 'info@domiday.com';
+
+  /// `https://domiday.com/ru/?v=1.0.2#feedback`: форма сама подставит версию.
+  static String siteUrl(String languageCode) =>
+      'https://domiday.com/${languageCode == 'ru' ? 'ru/' : ''}'
+      '?v=$appVersionShort#feedback';
+
+  static String mailUrl(String subject) =>
+      'mailto:$email?subject=${Uri.encodeComponent(subject)}';
+
+  @override
+  Widget build(BuildContext context) {
+    final l10n = context.l10n;
+    final scheme = Theme.of(context).colorScheme;
+    final share = ShareScope.of(context);
+    final lang = Localizations.localeOf(context).languageCode;
+    final muted = TextStyle(fontSize: 14, color: scheme.onSurfaceVariant);
+    Future<void> open(String url) async {
+      final ok = await share?.openUrl(url) ?? false;
+      if (!ok && context.mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text(l10n.aboutOpenFailed(url))));
+      }
+    }
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(l10n.feedbackTitle, style: Theme.of(context).textTheme.titleLarge),
+        const SizedBox(height: 8),
+        Text(l10n.feedbackBody, style: muted),
+        const SizedBox(height: 12),
+        Card(
+          clipBehavior: Clip.antiAlias,
+          child: Column(
+            children: [
+              ListTile(
+                key: siteKey,
+                leading: const Icon(Icons.rate_review_outlined),
+                title: Text(l10n.feedbackSite),
+                subtitle: Text(l10n.feedbackSiteHint),
+                trailing: const Icon(Icons.open_in_new_rounded, size: 18),
+                onTap: () => open(siteUrl(lang)),
+              ),
+              const Divider(height: 1),
+              ListTile(
+                key: emailKey,
+                leading: const Icon(Icons.mail_outline_rounded),
+                title: Text(l10n.feedbackEmail),
+                subtitle: const Text(email),
+                trailing: const Icon(Icons.open_in_new_rounded, size: 18),
+                onTap: () =>
+                    open(mailUrl(l10n.feedbackMailSubject(appVersionShort))),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+}
+
 class AboutPage extends StatelessWidget {
   const AboutPage({super.key});
 
-  static const email = 'info@domiday.com';
-  static const site = 'https://www.domiday.com';
+  static const email = FeedbackCard.email;
+  static const site = 'https://domiday.com';
 
   @override
   Widget build(BuildContext context) {
@@ -1643,9 +1719,8 @@ class AboutPage extends StatelessWidget {
     Future<void> open(String url) async {
       final ok = await share?.openUrl(url) ?? false;
       if (!ok && context.mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text(l10n.aboutOpenFailed(url))));
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text(l10n.aboutOpenFailed(url))));
       }
     }
 
@@ -1680,6 +1755,11 @@ class AboutPage extends StatelessWidget {
                 ),
                 const SizedBox(height: 12),
                 Text(l10n.aboutTagline, style: const TextStyle(fontSize: 16)),
+                const SizedBox(height: 28),
+                const FeedbackCard(
+                  siteKey: Key('aboutSite'),
+                  emailKey: Key('aboutEmail'),
+                ),
                 const SizedBox(height: 28),
                 _section(context, l10n.aboutPlaceTitle, l10n.aboutPlaceBody),
                 Padding(
@@ -1719,26 +1799,13 @@ class AboutPage extends StatelessWidget {
                 const SizedBox(height: 8),
                 Card(
                   clipBehavior: Clip.antiAlias,
-                  child: Column(
-                    children: [
-                      ListTile(
-                        key: const Key('aboutEmail'),
-                        leading: const Icon(Icons.mail_outline_rounded),
-                        title: Text(l10n.aboutContactEmail),
-                        subtitle: const Text(email),
-                        trailing: const Icon(Icons.open_in_new_rounded, size: 18),
-                        onTap: () => open('mailto:$email'),
-                      ),
-                      const Divider(height: 1),
-                      ListTile(
-                        key: const Key('aboutSite'),
-                        leading: const Icon(Icons.language_rounded),
-                        title: Text(l10n.aboutContactSite),
-                        subtitle: const Text('www.domiday.com'),
-                        trailing: const Icon(Icons.open_in_new_rounded, size: 18),
-                        onTap: () => open(site),
-                      ),
-                    ],
+                  child: ListTile(
+                    key: const Key('aboutHome'),
+                    leading: const Icon(Icons.language_rounded),
+                    title: Text(l10n.aboutContactSite),
+                    subtitle: const Text('domiday.com'),
+                    trailing: const Icon(Icons.open_in_new_rounded, size: 18),
+                    onTap: () => open(site),
                   ),
                 ),
                 const SizedBox(height: 8),

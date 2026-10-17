@@ -1829,4 +1829,25 @@ class AppLocalizationsRu extends AppLocalizations {
   @override
   String get mapEmpty =>
       'Здесь закрасятся страны, где вы были. Добавьте поездки в журнале или импортируйте историю из Google Maps.';
+
+  @override
+  String get feedbackTitle => 'Замечания и предложения';
+
+  @override
+  String get feedbackBody =>
+      'Нашли ошибку или чего-то не хватает? Напишите мне: я читаю каждое сообщение и дорабатываю приложение. Сайт или почта откроются в отдельном приложении; сам Domiday в интернет не ходит.';
+
+  @override
+  String get feedbackSite => 'Написать на сайте';
+
+  @override
+  String get feedbackSiteHint => 'Форма на сайте, без входа';
+
+  @override
+  String get feedbackEmail => 'Написать по почте';
+
+  @override
+  String feedbackMailSubject(String version) {
+    return 'Domiday $version: замечание';
+  }
 }

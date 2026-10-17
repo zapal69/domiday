@@ -2823,6 +2823,11 @@ class _StatusEditorState extends State<StatusEditor> {
                         _ImportSetting(controller: widget.controller),
                         const SizedBox(height: 24),
                       ],
+                      const FeedbackCard(
+                        siteKey: Key('settingsFeedbackSite'),
+                        emailKey: Key('settingsFeedbackEmail'),
+                      ),
+                      const SizedBox(height: 24),
                       _ClearAllSetting(controller: widget.controller),
                       const SizedBox(height: 24),
                     ],

@@ -3012,6 +3012,42 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Countries you have been to will be coloured here. Add trips in the journal or import your history from Google Maps.'**
   String get mapEmpty;
+
+  /// No description provided for @feedbackTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Feedback and suggestions'**
+  String get feedbackTitle;
+
+  /// No description provided for @feedbackBody.
+  ///
+  /// In en, this message translates to:
+  /// **'Found a bug, or something is missing? Write to me: I read every message and keep improving the app. The site or your mail app opens in a separate window; Domiday itself never goes online.'**
+  String get feedbackBody;
+
+  /// No description provided for @feedbackSite.
+  ///
+  /// In en, this message translates to:
+  /// **'Write on the website'**
+  String get feedbackSite;
+
+  /// No description provided for @feedbackSiteHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Feedback form, no sign-up'**
+  String get feedbackSiteHint;
+
+  /// No description provided for @feedbackEmail.
+  ///
+  /// In en, this message translates to:
+  /// **'Write by email'**
+  String get feedbackEmail;
+
+  /// No description provided for @feedbackMailSubject.
+  ///
+  /// In en, this message translates to:
+  /// **'Domiday {version}: feedback'**
+  String feedbackMailSubject(String version);
 }
 
 class _AppLocalizationsDelegate

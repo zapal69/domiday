@@ -583,5 +583,12 @@
   "mapHintAll": "Countries you have been to are coloured. Tap a country to see its days.",
   "mapHintYear": "Countries you visited in {year} are coloured. Tap a country to see its days.",
   "@mapHintYear": {"placeholders": {"year": {"type": "int"}}},
-  "mapEmpty": "Countries you have been to will be coloured here. Add trips in the journal or import your history from Google Maps."
+  "mapEmpty": "Countries you have been to will be coloured here. Add trips in the journal or import your history from Google Maps.",
+  "feedbackTitle": "Feedback and suggestions",
+  "feedbackBody": "Found a bug, or something is missing? Write to me: I read every message and keep improving the app. The site or your mail app opens in a separate window; Domiday itself never goes online.",
+  "feedbackSite": "Write on the website",
+  "feedbackSiteHint": "Feedback form, no sign-up",
+  "feedbackEmail": "Write by email",
+  "feedbackMailSubject": "Domiday {version}: feedback",
+  "@feedbackMailSubject": {"placeholders": {"version": {"type": "String"}}}
 }
