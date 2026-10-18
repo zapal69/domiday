@@ -1,7 +1,7 @@
 name: domiday
 description: Личный, полностью локальный дневник поездок.
 publish_to: 'none'
-version: 1.0.2+45
+version: 1.0.3+46
 
 environment:
   sdk: ^3.13.3

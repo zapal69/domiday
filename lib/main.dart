@@ -38,9 +38,9 @@ part 'map_page.dart';
 part 'year_review.dart';
 
 /// Код версии из pubspec (versionCode): поднимать вместе с версией.
-const appVersionCode = 45;
+const appVersionCode = 46;
 const appVersion = '$appVersionShort ($appVersionCode)';
-const appVersionShort = '1.0.2';
+const appVersionShort = '1.0.3';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();

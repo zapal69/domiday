@@ -2,8 +2,8 @@
 # Скопируйте в android/key.properties (этот файл исключён из Git) и заполните.
 # Ключ хранится ВНЕ проекта; путь абсолютный или относительно папки android/.
 # Не коммитьте key.properties, пароли и сам keystore.
-storeFile=/абсолютный/путь/к/domiday-prototype.keystore
+storeFile=/абсолютный/путь/к/domiday-release.keystore
 storeType=PKCS12
-keyAlias=
+keyAlias=domiday
 storePassword=
 keyPassword=
