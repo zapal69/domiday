@@ -12,6 +12,8 @@ tested every version on my phone. It is free, has no ads, and the source is
 open under GPL-3.0. The story in a few more words:
 [domiday.com/#author](https://domiday.com/#author).
 
+— Alexey, Cyprus
+
 <p>
   <img src="play/screens/en/1-today.png" width="200" alt="Today: days in the current country">
   <img src="play/screens/en/2-calendar.png" width="200" alt="Year calendar painted by country">
