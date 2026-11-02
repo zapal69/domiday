@@ -386,6 +386,12 @@ void main() {
       );
       await tapVisible(tester, 'saveStatus');
       expect(tester.takeException(), isNull);
+      // 1.0.5: диалог «Страна не найдена» для свободного текста — для
+      // домашней и для текущей страны (она подставляется из домашней).
+      for (var i = 0; i < 2; i++) {
+        await tapVisible(tester, 'countryKeep');
+        expect(tester.takeException(), isNull);
+      }
       await tapVisible(tester, 'previewGaps');
       expect(tester.takeException(), isNull);
       await tester.tap(find.byTooltip('Назад'));
@@ -393,6 +399,9 @@ void main() {
       await tester.tap(find.byTooltip('Настройки'));
       await tester.pumpAndSettle();
       await tapVisible(tester, 'saveStatus');
+      expect(tester.takeException(), isNull);
+      // Домашняя страна всё ещё свободным текстом — диалог и здесь.
+      await tapVisible(tester, 'countryKeep');
       expect(tester.takeException(), isNull);
       await tester.drag(
         find.byKey(const Key('dashboardScroll')),
@@ -542,6 +551,11 @@ void main() {
       expect(find.byKey(const Key('countryNoCode')), findsOneWidget);
       await chooseToday(tester, 'statusArrival');
       await tapVisible(tester, 'saveStatus');
+      // 1.0.5: «Страна не найдена» — без похожих, оставить как есть.
+      expect(find.byKey(const Key('countryNotFound')), findsOneWidget);
+      expect(find.byKey(const Key('countryUse')), findsNothing);
+      await tester.tap(find.byKey(const Key('countryKeep')));
+      await tester.pumpAndSettle();
       await tester.tap(find.text('Подтвердить переезд'));
       await tester.pumpAndSettle();
       expect(repo.snapshot.current!.country, 'Абхазия');

@@ -16,6 +16,10 @@ void main() {
     expect(find.byKey(const Key('trip-ge')), findsOneWidget);
     await reveal(tester, find.byKey(const Key('trip-tr')));
     expect(find.byKey(const Key('trip-tr')), findsOneWidget);
+    // Поле поиска скрыто до нажатия иконки в шапке (1.0.5).
+    expect(find.byKey(const Key('search')), findsNothing);
+    await tester.tap(find.byKey(const Key('journalSearch')));
+    await tester.pumpAndSettle();
     // В файле «Грузия», интерфейс русский, а ищут по-английски: находит
     // через справочник.
     await reveal(tester, find.byKey(const Key('search')));

@@ -538,7 +538,7 @@ class AppLocalizationsRu extends AppLocalizations {
 
   @override
   String get onboardingIntro =>
-      'Без аккаунта, почты и отслеживания. Укажите домашнюю и текущую страны. Если не помните дату приезда, оставьте её пустой.';
+      'Без аккаунта, почты и отслеживания. Укажите домашнюю и текущую страны; дату приезда можно оставить пустой.';
 
   @override
   String previousTripsKept(int count) {
@@ -1850,6 +1850,31 @@ class AppLocalizationsRu extends AppLocalizations {
   String feedbackMailSubject(String version) {
     return 'Domiday $version: замечание';
   }
+
+  @override
+  String get countryNotFoundTitle => 'Страна не найдена';
+
+  @override
+  String countryNotFoundSuggest(String text, String country) {
+    return '«$text» нет в списке стран. Вы имели в виду $country?';
+  }
+
+  @override
+  String countryNotFoundBody(String text) {
+    return '«$text» нет в списке стран.';
+  }
+
+  @override
+  String get countryNotFoundNote =>
+      'Можно оставить своё название: запись сохранится и будет считаться в журнале отдельной страной под этим именем, но на карту и глобус не попадёт — они знают только страны из списка.';
+
+  @override
+  String countryNotFoundUse(String country) {
+    return 'Выбрать $country';
+  }
+
+  @override
+  String get countryNotFoundKeep => 'Оставить как есть';
 
   @override
   String get playTitle => 'Нравится Domiday?';

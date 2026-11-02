@@ -929,7 +929,7 @@ abstract class AppLocalizations {
   /// No description provided for @onboardingIntro.
   ///
   /// In en, this message translates to:
-  /// **'No account, e-mail or tracking. Enter your home and current countries. If you don’t remember the arrival date, leave it empty.'**
+  /// **'No account, e-mail or tracking. Enter your home and current countries; the arrival date can stay empty.'**
   String get onboardingIntro;
 
   /// No description provided for @previousTripsKept.
@@ -3048,6 +3048,42 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Domiday {version}: feedback'**
   String feedbackMailSubject(String version);
+
+  /// No description provided for @countryNotFoundTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Country not found'**
+  String get countryNotFoundTitle;
+
+  /// No description provided for @countryNotFoundSuggest.
+  ///
+  /// In en, this message translates to:
+  /// **'“{text}” is not in the country list. Did you mean {country}?'**
+  String countryNotFoundSuggest(String text, String country);
+
+  /// No description provided for @countryNotFoundBody.
+  ///
+  /// In en, this message translates to:
+  /// **'“{text}” is not in the country list.'**
+  String countryNotFoundBody(String text);
+
+  /// No description provided for @countryNotFoundNote.
+  ///
+  /// In en, this message translates to:
+  /// **'You can keep your own name: the record is saved and counted in the journal as a separate country by that name, but it will not appear on the map and globe, which know only listed countries.'**
+  String get countryNotFoundNote;
+
+  /// No description provided for @countryNotFoundUse.
+  ///
+  /// In en, this message translates to:
+  /// **'Use {country}'**
+  String countryNotFoundUse(String country);
+
+  /// No description provided for @countryNotFoundKeep.
+  ///
+  /// In en, this message translates to:
+  /// **'Keep as typed'**
+  String get countryNotFoundKeep;
 
   /// No description provided for @playTitle.
   ///

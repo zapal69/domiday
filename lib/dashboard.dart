@@ -226,7 +226,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     final arrived = plans
         .where(
           (p) =>
-              p.arrival.compareTo(_day) <= 0 && p.departure.compareTo(_day) >= 0,
+              p.arrival.compareTo(_day) <= 0 &&
+              p.departure.compareTo(_day) >= 0,
         )
         .firstOrNull;
     final overdue = plans
@@ -250,7 +251,10 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
               children: [
                 Text(
                   l10n.planArrivedTitle(place(arrived)),
-                  style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700),
+                  style: const TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.w700,
+                  ),
                 ),
                 const SizedBox(height: 10),
                 Wrap(
@@ -287,7 +291,10 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
               children: [
                 Text(
                   l10n.planOverdueTitle(place(overdue)),
-                  style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700),
+                  style: const TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.w700,
+                  ),
                 ),
                 const SizedBox(height: 4),
                 Text(l10n.planOverdueBody),
@@ -339,7 +346,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   Future<void> _confirmPlan(Trip plan) async {
     final snapshot = _controller.snapshot;
     final same = snapshot.current?.countryKey == plan.countryKey;
-    final saved = same || await _changeFromCandidate(plan.country, plan.arrival);
+    final saved =
+        same || await _changeFromCandidate(plan.country, plan.arrival);
     if (!saved || !mounted) return;
     final now = _controller.snapshot;
     await _controller.commit(
@@ -612,12 +620,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       );
     }
     final map = _map;
-    final tabs = [
-      _today,
-      _calendar,
-      if (map != null) _mapTab,
-      _journalTab,
-    ];
+    final tabs = [_today, _calendar, if (map != null) _mapTab, _journalTab];
     final selected = tabs.indexOf(_tab);
     Widget page(int tab) {
       if (!_built.contains(tab)) return const SizedBox.shrink();
@@ -740,7 +743,9 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                             t.arrival.compareTo(_day) <= 0 &&
                             t.departure.compareTo(_day) >= 0,
                       )
-                      .map((t) => countryName(context, t.countryCode, t.country))
+                      .map(
+                        (t) => countryName(context, t.countryCode, t.country),
+                      )
                       .firstOrNull,
                   onDate: () =>
                       _openStatus(context, _controller, StatusMode.date),
@@ -933,7 +938,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
             context,
             filterStat?.code,
             filterStat?.label ??
-                snapshot.knownTrips(_day)
+                snapshot
+                    .knownTrips(_day)
                     .where((t) => t.countryKey == filterKey)
                     .map((t) => t.country)
                     .firstOrNull ??
@@ -1000,9 +1006,9 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                                   textAlign: TextAlign.center,
                                   style: TextStyle(
                                     fontSize: 14,
-                                    color: Theme.of(
-                                      context,
-                                    ).colorScheme.onSurfaceVariant,
+                                    color: Theme.of(context)
+                                        .colorScheme
+                                        .onSurfaceVariant,
                                   ),
                                 ),
                               ],
@@ -1326,7 +1332,9 @@ class _OnThisDayCard extends StatelessWidget {
             children: [
               for (var i = 0; i < entries.length && i < 5; i++)
                 InkWell(
-                  key: Key('onThisDay-${entries[i].year}-${entries[i].trip.id}'),
+                  key: Key(
+                    'onThisDay-${entries[i].year}-${entries[i].trip.id}',
+                  ),
                   onTap: () => onOpen(entries[i].trip),
                   child: Container(
                     decoration: i > 0
@@ -1345,7 +1353,10 @@ class _OnThisDayCard extends StatelessWidget {
                         ),
                         const SizedBox(width: 12),
                         if (entries[i].trip.countryCode != null) ...[
-                          CountryFlag(code: entries[i].trip.countryCode, width: 26),
+                          CountryFlag(
+                            code: entries[i].trip.countryCode,
+                            width: 26,
+                          ),
                           const SizedBox(width: 10),
                         ],
                         Expanded(
@@ -2505,9 +2516,34 @@ class _StatusEditorState extends State<StatusEditor> {
     }
   }
 
+  Widget _saveButton(AppLocalizations l10n) => FilledButton(
+    key: const Key('saveStatus'),
+    onPressed: _busy ? null : _save,
+    child: Text(
+      _busy
+          ? l10n.saving
+          : _change
+          ? l10n.checkMove
+          : _onboarding
+          ? l10n.openDashboard
+          : l10n.save,
+    ),
+  );
+
   Future<void> _save() async {
     if (_busy || !_form.currentState!.validate()) return;
     FocusScope.of(context).unfocus();
+    // Опечатка в стране: предложить похожую до записи (1.0.5).
+    if (_onboarding || widget.mode == StatusMode.home) {
+      final typed = _home.text;
+      if (!await confirmUnknownCountry(context, _home) || !mounted) return;
+      // В онбординге текущая страна подставляется из домашней: исправили
+      // одну — исправить и вторую, чтобы не спрашивать дважды.
+      if (_onboarding && _country.text == typed) _country.text = _home.text;
+    }
+    if (_onboarding || _change || widget.mode == StatusMode.archive) {
+      if (!await confirmUnknownCountry(context, _country) || !mounted) return;
+    }
     final controller = widget.controller;
     final snapshot = controller.snapshot;
     final today = controller.today();
@@ -2702,6 +2738,17 @@ class _StatusEditorState extends State<StatusEditor> {
         if (!didPop && !_onboarding) _back();
       },
       child: Scaffold(
+        // Онбординг: кнопка «Открыть дневник» всегда видна внизу, список
+        // прокручивается над ней (замечание тестировщика 2.11.2026).
+        bottomNavigationBar: _onboarding
+            ? SafeArea(
+                top: false,
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(20, 8, 20, 12),
+                  child: _saveButton(l10n),
+                ),
+              )
+            : null,
         appBar: AppBar(
           title: Text(_title(l10n)),
           leading: _onboarding
@@ -2734,22 +2781,28 @@ class _StatusEditorState extends State<StatusEditor> {
                 child: ListView(
                   padding: const EdgeInsets.fromLTRB(20, 12, 20, 32),
                   children: [
+                    // 1.0.5: короче и ниже — кнопка продолжения закреплена
+                    // внизу экрана (bottomNavigationBar), текст в три
+                    // тезиса; подробности — в «О дневнике».
                     if (_onboarding) ...[
                       Text(
                         l10n.onboardingHeadline,
-                        style: Theme.of(context).textTheme.headlineMedium
+                        style: Theme.of(context).textTheme.titleLarge
                             ?.copyWith(fontWeight: FontWeight.w700),
                       ),
-                      const SizedBox(height: 12),
-                      Text(l10n.onboardingIntro),
+                      const SizedBox(height: 8),
+                      Text(
+                        l10n.onboardingIntro,
+                        style: const TextStyle(fontSize: 14, height: 1.4),
+                      ),
                       if (BackupScope.of(context) != null) ...[
-                        const SizedBox(height: 16),
+                        const SizedBox(height: 12),
                         Text(
                           l10n.onboardingHaveHistory,
-                          style: Theme.of(context).textTheme.titleMedium
+                          style: Theme.of(context).textTheme.titleSmall
                               ?.copyWith(fontWeight: FontWeight.w700),
                         ),
-                        const SizedBox(height: 8),
+                        const SizedBox(height: 6),
                         Wrap(
                           spacing: 12,
                           runSpacing: 8,
@@ -2781,8 +2834,11 @@ class _StatusEditorState extends State<StatusEditor> {
                               ),
                           ],
                         ),
-                        const SizedBox(height: 12),
-                        Text(l10n.onboardingFresh),
+                        const SizedBox(height: 10),
+                        Text(
+                          l10n.onboardingFresh,
+                          style: const TextStyle(fontSize: 14),
+                        ),
                       ],
                       if (widget.controller.snapshot.trips.isNotEmpty) ...[
                         const SizedBox(height: 12),
@@ -2792,7 +2848,7 @@ class _StatusEditorState extends State<StatusEditor> {
                           ),
                         ),
                       ],
-                      const SizedBox(height: 24),
+                      const SizedBox(height: 16),
                     ],
                     if (_onboarding || widget.mode == StatusMode.home) ...[
                       _countryField(_home, l10n.homeCountry, 'homeCountry'),
@@ -2911,19 +2967,7 @@ class _StatusEditorState extends State<StatusEditor> {
                       ),
                       const SizedBox(height: 16),
                     ],
-                    FilledButton(
-                      key: const Key('saveStatus'),
-                      onPressed: _busy ? null : _save,
-                      child: Text(
-                        _busy
-                            ? l10n.saving
-                            : _change
-                            ? l10n.checkMove
-                            : _onboarding
-                            ? l10n.openDashboard
-                            : l10n.save,
-                      ),
-                    ),
+                    if (!_onboarding) _saveButton(l10n),
                     if (widget.mode == StatusMode.archive) ...[
                       const SizedBox(height: 16),
                       OutlinedButton.icon(
@@ -4453,9 +4497,8 @@ Future<void> restoreBackup(
     if (!context.mounted) return;
     // Восстановились из копии — значит, копия есть: дата последней копии
     // равна дате файла, напоминание «копии ещё не было» не показывается.
-    await SettingsController.of(
-      context,
-    ).markBackup(info.createdAt ?? DateTime.now());
+    await SettingsController.of(context)
+        .markBackup(info.createdAt ?? DateTime.now());
     if (!context.mounted) return;
     messenger.showSnackBar(
       SnackBar(

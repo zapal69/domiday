@@ -535,7 +535,7 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get onboardingIntro =>
-      'No account, e-mail or tracking. Enter your home and current countries. If you don’t remember the arrival date, leave it empty.';
+      'No account, e-mail or tracking. Enter your home and current countries; the arrival date can stay empty.';
 
   @override
   String previousTripsKept(int count) {
@@ -1837,6 +1837,31 @@ class AppLocalizationsEn extends AppLocalizations {
   String feedbackMailSubject(String version) {
     return 'Domiday $version: feedback';
   }
+
+  @override
+  String get countryNotFoundTitle => 'Country not found';
+
+  @override
+  String countryNotFoundSuggest(String text, String country) {
+    return '“$text” is not in the country list. Did you mean $country?';
+  }
+
+  @override
+  String countryNotFoundBody(String text) {
+    return '“$text” is not in the country list.';
+  }
+
+  @override
+  String get countryNotFoundNote =>
+      'You can keep your own name: the record is saved and counted in the journal as a separate country by that name, but it will not appear on the map and globe, which know only listed countries.';
+
+  @override
+  String countryNotFoundUse(String country) {
+    return 'Use $country';
+  }
+
+  @override
+  String get countryNotFoundKeep => 'Keep as typed';
 
   @override
   String get playTitle => 'Like Domiday?';

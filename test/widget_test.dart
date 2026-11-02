@@ -235,6 +235,8 @@ void main() {
       expect(repo.records.single.city, 'Батуми');
       await tester.drag(find.byType(ListView).first, const Offset(0, 1600));
       await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('journalSearch')));
+      await tester.pumpAndSettle();
       await tester.enterText(find.byKey(const Key('search')), 'нет такого');
       await tester.pumpAndSettle();
       await reveal(tester, find.text('Таких записей пока нет.'));

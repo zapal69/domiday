@@ -80,6 +80,30 @@ class CountryDirectory {
   String display(String? code, String fallback, String languageCode) =>
       this[code]?.name(languageCode) ?? fallback;
 
+  /// Похожие страны для текста без точного совпадения («frnace» → France):
+  /// по расстоянию редактирования с перестановками до любого написания,
+  /// порог растёт с длиной текста. Пусто — ничего похожего. Это только
+  /// подсказка для диалога «Страна не найдена», код по ней не назначается
+  /// без выбора человека (1.0.5, замечание тестировщика 2.11.2026).
+  List<Country> closest(String text, {int limit = 2}) {
+    final q = normalize(text);
+    if (q.length < 3) return const [];
+    final threshold = q.length <= 4 ? 1 : (q.length <= 8 ? 2 : 3);
+    final scored = <(int, Country)>[];
+    for (final c in all) {
+      var best = threshold + 1;
+      for (final s in c.spellings) {
+        final n = normalize(s);
+        if ((n.length - q.length).abs() > threshold) continue;
+        final d = _editDistance(q, n, threshold);
+        if (d < best) best = d;
+      }
+      if (best <= threshold) scored.add((best, c));
+    }
+    scored.sort((a, b) => a.$1.compareTo(b.$1));
+    return [for (final s in scored.take(limit)) s.$2];
+  }
+
   /// Поиск для выбора: сначала совпадения по началу названия на языке
   /// интерфейса, затем по началу любого написания, затем по подстроке.
   /// Пустой запрос — страны [first] в заданном порядке (свои: текущая,
@@ -136,4 +160,40 @@ class CountryScope extends InheritedWidget {
 
   @override
   bool updateShouldNotify(CountryScope old) => old.directory != directory;
+}
+
+/// Расстояние Дамерау — Левенштейна (замена, вставка, удаление,
+/// перестановка соседних); при превышении [cap] возвращает cap + 1.
+int _editDistance(String a, String b, int cap) {
+  final n = a.length;
+  final m = b.length;
+  if ((n - m).abs() > cap) return cap + 1;
+  var prev2 = List<int>.filled(m + 1, 0);
+  var prev = List<int>.generate(m + 1, (j) => j);
+  var cur = List<int>.filled(m + 1, 0);
+  for (var i = 1; i <= n; i++) {
+    cur[0] = i;
+    var rowMin = cur[0];
+    for (var j = 1; j <= m; j++) {
+      final cost = a.codeUnitAt(i - 1) == b.codeUnitAt(j - 1) ? 0 : 1;
+      var v = prev[j - 1] + cost;
+      if (prev[j] + 1 < v) v = prev[j] + 1;
+      if (cur[j - 1] + 1 < v) v = cur[j - 1] + 1;
+      if (i > 1 &&
+          j > 1 &&
+          a.codeUnitAt(i - 1) == b.codeUnitAt(j - 2) &&
+          a.codeUnitAt(i - 2) == b.codeUnitAt(j - 1) &&
+          prev2[j - 2] + 1 < v) {
+        v = prev2[j - 2] + 1;
+      }
+      cur[j] = v;
+      if (v < rowMin) rowMin = v;
+    }
+    if (rowMin > cap) return cap + 1;
+    final t = prev2;
+    prev2 = prev;
+    prev = cur;
+    cur = t;
+  }
+  return prev[m];
 }

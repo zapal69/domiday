@@ -38,9 +38,9 @@ part 'map_page.dart';
 part 'year_review.dart';
 
 /// Код версии из pubspec (versionCode): поднимать вместе с версией.
-const appVersionCode = 50;
+const appVersionCode = 51;
 const appVersion = '$appVersionShort ($appVersionCode)';
-const appVersionShort = '1.0.4';
+const appVersionShort = '1.0.5';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -240,6 +240,8 @@ class JournalPage extends StatefulWidget {
 }
 
 class _JournalPageState extends State<JournalPage> {
+  /// Поле поиска раскрыто иконкой в шапке (1.0.5).
+  bool _searchOpen = false;
   List<Trip> get _trips =>
       widget.controller.snapshot.knownTrips(widget.today());
   final _search = TextEditingController();
@@ -452,6 +454,27 @@ class _JournalPageState extends State<JournalPage> {
       appBar: AppBar(
         title: const AppTitle(),
         actions: [
+          // 1.0.5: поиск за иконкой, чтобы записи были видны сразу
+          // (замечание тестировщика 2.11.2026).
+          if (_trips.isNotEmpty || plans.isNotEmpty)
+            IconButton(
+              key: const Key('journalSearch'),
+              tooltip: l10n.searchLabel,
+              isSelected: _searchOpen,
+              onPressed: () {
+                setState(() {
+                  _searchOpen = !_searchOpen;
+                  if (!_searchOpen) _search.clear();
+                });
+                if (_searchOpen) {
+                  _searchFocus.requestFocus();
+                } else {
+                  _searchFocus.unfocus();
+                }
+              },
+              icon: const Icon(Icons.search_rounded),
+              selectedIcon: const Icon(Icons.search_off_rounded),
+            ),
           IconButton(
             tooltip: l10n.aboutTooltip,
             onPressed: () => Navigator.push<void>(
@@ -476,17 +499,17 @@ class _JournalPageState extends State<JournalPage> {
                 _trips.isEmpty ? 32 : 96,
               ),
               children: [
-                Text(
-                  l10n.journalTitle,
-                  style: Theme.of(context).textTheme.headlineMedium
-                      ?.copyWith(fontWeight: FontWeight.w700),
-                ),
-                const SizedBox(height: 8),
-                Text(l10n.journalSubtitle),
-                const SizedBox(height: 24),
-                if (_trips.isEmpty && plans.isEmpty)
-                  _emptyState()
-                else ...[
+                if (_trips.isEmpty && plans.isEmpty) ...[
+                  Text(
+                    l10n.journalTitle,
+                    style: Theme.of(context).textTheme.headlineMedium
+                        ?.copyWith(fontWeight: FontWeight.w700),
+                  ),
+                  const SizedBox(height: 8),
+                  Text(l10n.journalSubtitle),
+                  const SizedBox(height: 24),
+                  _emptyState(),
+                ] else ...[
                   // Прошлых поездок ещё нет (только текущее пребывание) —
                   // историю можно взять из Google Maps.
                   if (widget.controller.snapshot.trips.isEmpty &&
@@ -503,90 +526,95 @@ class _JournalPageState extends State<JournalPage> {
                   ],
                   // Поиск с подсказками стран, как поле страны в редакторе
                   // поездки: выбор подсказки ставит фильтр по стране.
-                  RawAutocomplete<Country>(
-                    textEditingController: _search,
-                    focusNode: _searchFocus,
-                    displayStringForOption: (c) => c.name(language),
-                    optionsBuilder: (value) {
-                      if (value.text.trim().isEmpty) {
-                        return const Iterable<Country>.empty();
-                      }
-                      final present = {
-                        for (final s in allStats)
-                          if (s.code != null) s.code!,
-                      };
-                      return directory
-                          .search(value.text, language)
-                          .where((c) => present.contains(c.code))
-                          .take(8);
-                    },
-                    onSelected: (c) {
-                      final key = allStats
-                          .where((s) => s.code == c.code)
-                          .map((s) => s.key)
-                          .firstOrNull;
-                      setState(() {
-                        _country = key;
-                        _search.clear();
-                      });
-                      _searchFocus.unfocus();
-                    },
-                    fieldViewBuilder: (context, controller, focusNode, _) =>
-                        TextField(
-                          key: const Key('search'),
-                          controller: controller,
-                          focusNode: focusNode,
-                          onChanged: (_) => setState(() {}),
-                          decoration: InputDecoration(
-                            labelText: l10n.searchLabel,
-                            hintText: l10n.searchHint,
-                            prefixIcon: const Icon(Icons.search_rounded),
-                            suffixIcon: controller.text.isEmpty
-                                ? null
-                                : IconButton(
-                                    tooltip: l10n.clearSearch,
-                                    onPressed: () => setState(controller.clear),
-                                    icon: const Icon(Icons.close),
-                                  ),
-                          ),
-                        ),
-                    optionsViewBuilder: (context, onSelected, options) => Align(
-                      alignment: Alignment.topLeft,
-                      child: Material(
-                        elevation: 6,
-                        borderRadius: BorderRadius.circular(16),
-                        clipBehavior: Clip.antiAlias,
-                        child: SizedBox(
-                          width: (MediaQuery.sizeOf(context).width - 40).clamp(
-                            0.0,
-                            680.0,
-                          ),
-                          child: ConstrainedBox(
-                            constraints: const BoxConstraints(maxHeight: 280),
-                            child: ListView(
-                              key: const Key('journalSuggestions'),
-                              padding: EdgeInsets.zero,
-                              shrinkWrap: true,
-                              children: [
-                                for (final c in options)
-                                  ListTile(
-                                    key: Key('journalSuggest-${c.code}'),
-                                    dense: true,
-                                    leading: CountryFlag(
-                                      code: c.code,
-                                      width: 24,
+                  // Показывается по иконке в шапке.
+                  if (_searchOpen || _search.text.isNotEmpty)
+                    RawAutocomplete<Country>(
+                      textEditingController: _search,
+                      focusNode: _searchFocus,
+                      displayStringForOption: (c) => c.name(language),
+                      optionsBuilder: (value) {
+                        if (value.text.trim().isEmpty) {
+                          return const Iterable<Country>.empty();
+                        }
+                        final present = {
+                          for (final s in allStats)
+                            if (s.code != null) s.code!,
+                        };
+                        return directory
+                            .search(value.text, language)
+                            .where((c) => present.contains(c.code))
+                            .take(8);
+                      },
+                      onSelected: (c) {
+                        final key = allStats
+                            .where((s) => s.code == c.code)
+                            .map((s) => s.key)
+                            .firstOrNull;
+                        setState(() {
+                          _country = key;
+                          _search.clear();
+                        });
+                        _searchFocus.unfocus();
+                      },
+                      fieldViewBuilder: (context, controller, focusNode, _) =>
+                          TextField(
+                            key: const Key('search'),
+                            controller: controller,
+                            focusNode: focusNode,
+                            onChanged: (_) => setState(() {}),
+                            decoration: InputDecoration(
+                              labelText: l10n.searchLabel,
+                              hintText: l10n.searchHint,
+                              prefixIcon: const Icon(Icons.search_rounded),
+                              suffixIcon: controller.text.isEmpty
+                                  ? null
+                                  : IconButton(
+                                      tooltip: l10n.clearSearch,
+                                      onPressed: () =>
+                                          setState(controller.clear),
+                                      icon: const Icon(Icons.close),
                                     ),
-                                    title: Text(c.name(language)),
-                                    onTap: () => onSelected(c),
-                                  ),
-                              ],
                             ),
                           ),
-                        ),
-                      ),
+                      optionsViewBuilder: (context, onSelected, options) =>
+                          Align(
+                            alignment: Alignment.topLeft,
+                            child: Material(
+                              elevation: 6,
+                              borderRadius: BorderRadius.circular(16),
+                              clipBehavior: Clip.antiAlias,
+                              child: SizedBox(
+                                width: (MediaQuery.sizeOf(context).width - 40)
+                                    .clamp(0.0, 680.0),
+                                child: ConstrainedBox(
+                                  constraints: const BoxConstraints(
+                                    maxHeight: 280,
+                                  ),
+                                  child: ListView(
+                                    key: const Key('journalSuggestions'),
+                                    padding: EdgeInsets.zero,
+                                    shrinkWrap: true,
+                                    children: [
+                                      for (final c in options)
+                                        ListTile(
+                                          key: Key('journalSuggest-${c.code}'),
+                                          dense: true,
+                                          leading: CountryFlag(
+                                            code: c.code,
+                                            width: 24,
+                                          ),
+                                          title: Text(c.name(language)),
+                                          onTap: () => onSelected(c),
+                                        ),
+                                    ],
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ),
                     ),
-                  ),
-                  const SizedBox(height: 12),
+                  if (_searchOpen || _search.text.isNotEmpty)
+                    const SizedBox(height: 12),
                   Wrap(
                     spacing: 10,
                     runSpacing: 8,
@@ -614,7 +642,7 @@ class _JournalPageState extends State<JournalPage> {
                         ActionChip(label: Text(l10n.reset), onPressed: _reset),
                     ],
                   ),
-                  const SizedBox(height: 20),
+                  const SizedBox(height: 12),
                   _Summary(
                     trips: selected.length,
                     countries: stats.length,
@@ -622,14 +650,14 @@ class _JournalPageState extends State<JournalPage> {
                     filtered: filtered,
                     year: _year,
                   ),
-                  const SizedBox(height: 28),
-                  Text(
-                    filtered
-                        ? l10n.foundTrips(selected.length)
-                        : l10n.tripHistory,
-                    style: Theme.of(context).textTheme.titleLarge,
-                  ),
-                  const SizedBox(height: 14),
+                  const SizedBox(height: 16),
+                  if (filtered) ...[
+                    Text(
+                      l10n.foundTrips(selected.length),
+                      style: Theme.of(context).textTheme.titleLarge,
+                    ),
+                    const SizedBox(height: 14),
+                  ],
                   if (selected.isEmpty)
                     Card(
                       child: Padding(
@@ -846,8 +874,10 @@ class _Summary extends StatelessWidget {
   Widget build(BuildContext context) {
     final colors = DomidayColors.of(context);
     final l10n = context.l10n;
+    // 1.0.5: одна компактная плашка вместо большого блока, чтобы записи
+    // были видны сразу (замечание тестировщика 2.11.2026).
     return Container(
-      padding: const EdgeInsets.all(24),
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
       decoration: BoxDecoration(
         color: colors.hero,
         borderRadius: BorderRadius.circular(kRadiusHero),
@@ -856,34 +886,34 @@ class _Summary extends StatelessWidget {
         style: TextStyle(
           fontFamily: 'Roboto',
           color: colors.heroInk,
-          fontSize: 16,
-          height: 1.4,
+          fontSize: 15,
+          height: 1.35,
         ),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(filtered ? l10n.bySelectedTrips : l10n.yourJournalInNumbers),
-            const SizedBox(height: 16),
-            Text(
-              '$days',
-              style: display(size: 48, color: kYellow, height: 1.1),
-            ),
-            const SizedBox(height: 6),
-            Text(l10n.daysInRecordedTrips),
-            const SizedBox(height: 16),
             Wrap(
-              spacing: 24,
-              runSpacing: 8,
+              crossAxisAlignment: WrapCrossAlignment.end,
+              spacing: 8,
+              runSpacing: 4,
               children: [
+                Text(
+                  '$days',
+                  style: display(size: 28, color: kYellow, height: 1.1),
+                ),
+                Text(l10n.daysInRecordedTrips),
+                const Text('·'),
                 Text(l10n.tripsCount(trips)),
+                const Text('·'),
                 Text(l10n.countriesCount(countries)),
               ],
             ),
-            const SizedBox(height: 16),
+            const SizedBox(height: 4),
             Text(
+              '${filtered ? '${l10n.bySelectedTrips} ' : ''}'
               '${l10n.bothDatesIncluded}'
               '${year == null ? '' : ' ${l10n.daysOnlyInYear(year!)}'}',
-              style: TextStyle(fontSize: 14, color: colors.heroMuted),
+              style: TextStyle(fontSize: 12, color: colors.heroMuted),
             ),
           ],
         ),
@@ -1228,6 +1258,7 @@ class _TripEditorState extends State<TripEditor> {
       setState(() => _error = context.l10n.errorPickBothDates);
       return;
     }
+    if (!await confirmUnknownCountry(context, _country) || !mounted) return;
     final trip = Trip(
       id: _id,
       country: cleanText(_country.text),
@@ -1614,6 +1645,59 @@ class _TripEditorState extends State<TripEditor> {
       ],
     ),
   );
+}
+
+/// «Страна не найдена»: текст в [field] не совпал ни с одним названием из
+/// справочника. Произвольное название допустимо (правило проекта), но без
+/// кода запись не попадёт на карту и глобус, а в журнале станет отдельной
+/// страной по тексту — тестировщик 2.11.2026 получил «2 страны в журнале,
+/// 1 на карте» из-за опечатки «frnace». Диалог предлагает похожую страну;
+/// выбор подставляет её название в поле (код назначится по точному
+/// совпадению, как всегда). Возвращает false — отмена сохранения.
+Future<bool> confirmUnknownCountry(
+  BuildContext context,
+  TextEditingController field,
+) async {
+  final text = cleanText(field.text);
+  if (text.isEmpty) return true;
+  final directory = CountryScope.of(context);
+  // Без справочника (не загрузился) сравнивать не с чем — не мешать.
+  if (directory.all.isEmpty || directory.match(text) != null) return true;
+  final lang = Localizations.localeOf(context).languageCode;
+  final suggestion = directory.closest(text).firstOrNull;
+  final l10n = context.l10n;
+  final name = suggestion?.name(lang);
+  final choice = await showDialog<String>(
+    context: context,
+    builder: (context) => AlertDialog(
+      key: const Key('countryNotFound'),
+      scrollable: true,
+      title: Text(l10n.countryNotFoundTitle),
+      content: Text(
+        '${name == null ? l10n.countryNotFoundBody(text) : l10n.countryNotFoundSuggest(text, name)}'
+        '\n\n${l10n.countryNotFoundNote}',
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: Text(l10n.cancel),
+        ),
+        TextButton(
+          key: const Key('countryKeep'),
+          onPressed: () => Navigator.pop(context, 'keep'),
+          child: Text(l10n.countryNotFoundKeep),
+        ),
+        if (name != null)
+          FilledButton(
+            key: const Key('countryUse'),
+            onPressed: () => Navigator.pop(context, 'use'),
+            child: Text(l10n.countryNotFoundUse(name)),
+          ),
+      ],
+    ),
+  );
+  if (choice == 'use') field.text = name!;
+  return choice != null;
 }
 
 /// Замечания и предложения: карточка с двумя действиями — форма на сайте

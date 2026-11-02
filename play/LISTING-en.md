@@ -38,6 +38,10 @@ Country borders: Natural Earth, public domain. Requires 64-bit Android 7.0 or la
 
 Questions: info@domiday.com. Website: domiday.com
 
+## What’s new (1.0.5, closed test, 2 Nov 2026)
+
+From tester feedback: a “Country not found” check suggests the closest country before saving a misspelled name (your own name can still stay, but it will not show on the map); a shorter welcome screen with the continue button always visible; the journal opens on your records, with search behind an icon and a compact summary. Plus “Rate on Google Play” and “Share Domiday” from 1.0.4.
+
 ## What’s new (1.0.4, closed test, 2 Nov 2026)
 
 New in Settings and About: “Rate on Google Play” and “Share Domiday”. Suggested by closed-test testers. No new permissions; the app still works offline and never goes online itself.
