@@ -590,5 +590,13 @@
   "feedbackSiteHint": "Feedback form, no sign-up",
   "feedbackEmail": "Write by email",
   "feedbackMailSubject": "Domiday {version}: feedback",
+  "playTitle": "Like Domiday?",
+  "playBody": "A rating helps other travellers find the app, and sharing sends a link to Google Play. Both open another app; Domiday itself never goes online.",
+  "rateApp": "Rate on Google Play",
+  "rateAppHint": "Opens the app page in Google Play",
+  "shareApp": "Share Domiday",
+  "shareAppHint": "Sends a link to Google Play",
+  "shareAppText": "Domiday: a private day counter by country and travel journal. Offline, no account. {url}",
+  "@shareAppText": {"placeholders": {"url": {"type": "String"}}},
   "@feedbackMailSubject": {"placeholders": {"version": {"type": "String"}}}
 }

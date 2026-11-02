@@ -58,6 +58,27 @@ class MainActivity : FlutterActivity() {
                             result.error("share", e.message, null)
                         }
                     }
+                    // «Поделиться Domiday»: текст со ссылкой на Google Play
+                    // в системное меню (1.0.4, по предложению тестировщиков).
+                    "shareText" -> {
+                        val text = call.argument<String>("text")
+                        val title = call.argument<String>("title") ?: ""
+                        if (text == null) {
+                            result.error("args", "text required", null)
+                            return@setMethodCallHandler
+                        }
+                        try {
+                            val send = Intent(Intent.ACTION_SEND).apply {
+                                type = "text/plain"
+                                putExtra(Intent.EXTRA_TEXT, text)
+                                putExtra(Intent.EXTRA_SUBJECT, title)
+                            }
+                            startActivity(Intent.createChooser(send, title))
+                            result.success(true)
+                        } catch (e: Exception) {
+                            result.success(false)
+                        }
+                    }
                     // «О приложении»: почта и сайт открываются в другом
                     // приложении. Само приложение в сеть не ходит.
                     "openUrl" -> {

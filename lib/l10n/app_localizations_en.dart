@@ -1837,4 +1837,28 @@ class AppLocalizationsEn extends AppLocalizations {
   String feedbackMailSubject(String version) {
     return 'Domiday $version: feedback';
   }
+
+  @override
+  String get playTitle => 'Like Domiday?';
+
+  @override
+  String get playBody =>
+      'A rating helps other travellers find the app, and sharing sends a link to Google Play. Both open another app; Domiday itself never goes online.';
+
+  @override
+  String get rateApp => 'Rate on Google Play';
+
+  @override
+  String get rateAppHint => 'Opens the app page in Google Play';
+
+  @override
+  String get shareApp => 'Share Domiday';
+
+  @override
+  String get shareAppHint => 'Sends a link to Google Play';
+
+  @override
+  String shareAppText(String url) {
+    return 'Domiday: a private day counter by country and travel journal. Offline, no account. $url';
+  }
 }

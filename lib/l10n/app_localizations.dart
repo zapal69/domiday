@@ -3048,6 +3048,48 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Domiday {version}: feedback'**
   String feedbackMailSubject(String version);
+
+  /// No description provided for @playTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Like Domiday?'**
+  String get playTitle;
+
+  /// No description provided for @playBody.
+  ///
+  /// In en, this message translates to:
+  /// **'A rating helps other travellers find the app, and sharing sends a link to Google Play. Both open another app; Domiday itself never goes online.'**
+  String get playBody;
+
+  /// No description provided for @rateApp.
+  ///
+  /// In en, this message translates to:
+  /// **'Rate on Google Play'**
+  String get rateApp;
+
+  /// No description provided for @rateAppHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Opens the app page in Google Play'**
+  String get rateAppHint;
+
+  /// No description provided for @shareApp.
+  ///
+  /// In en, this message translates to:
+  /// **'Share Domiday'**
+  String get shareApp;
+
+  /// No description provided for @shareAppHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Sends a link to Google Play'**
+  String get shareAppHint;
+
+  /// No description provided for @shareAppText.
+  ///
+  /// In en, this message translates to:
+  /// **'Domiday: a private day counter by country and travel journal. Offline, no account. {url}'**
+  String shareAppText(String url);
 }
 
 class _AppLocalizationsDelegate

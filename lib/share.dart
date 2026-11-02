@@ -12,6 +12,11 @@ abstract interface class ShareService {
   /// Открыть адрес (mailto: или https:) в другом приложении — почте или
   /// браузере. Само приложение в сеть не ходит: адрес передаётся системе.
   Future<bool> openUrl(String url);
+
+  /// Системное меню «Поделиться» для текста (ссылка на Domiday в Google
+  /// Play). Текст уходит выбранному приложению, само приложение в сеть не
+  /// ходит. Возвращает false, если меню не открылось.
+  Future<bool> shareText(String text, String title);
 }
 
 class ChannelShareService implements ShareService {
@@ -34,6 +39,19 @@ class ChannelShareService implements ShareService {
   @override
   Future<bool> openUrl(String url) async =>
       await _channel.invokeMethod<bool>('openUrl', {'url': url}) ?? false;
+
+  @override
+  Future<bool> shareText(String text, String title) async {
+    try {
+      return await _channel.invokeMethod<bool>('shareText', {
+            'text': text,
+            'title': title,
+          }) ??
+          false;
+    } on PlatformException {
+      return false;
+    }
+  }
 }
 
 class FakeShareService implements ShareService {
@@ -42,10 +60,19 @@ class FakeShareService implements ShareService {
   String? title;
   bool fail = false;
   final opened = <String>[];
+  final texts = <String>[];
   @override
   Future<bool> openUrl(String url) async {
     if (fail) return false;
     opened.add(url);
+    return true;
+  }
+
+  @override
+  Future<bool> shareText(String text, String title) async {
+    if (fail) return false;
+    texts.add(text);
+    this.title = title;
     return true;
   }
 

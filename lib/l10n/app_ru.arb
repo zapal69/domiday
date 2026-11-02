@@ -511,5 +511,13 @@
   "feedbackSite": "Написать на сайте",
   "feedbackSiteHint": "Форма на сайте, без входа",
   "feedbackEmail": "Написать по почте",
-  "feedbackMailSubject": "Domiday {version}: замечание"
+  "feedbackMailSubject": "Domiday {version}: замечание",
+  "playTitle": "Нравится Domiday?",
+  "playBody": "Оценка помогает другим путешественникам найти приложение, а «Поделиться» отправляет ссылку на Google Play. Оба действия открывают другое приложение; сам Domiday в сеть не ходит.",
+  "rateApp": "Оценить в Google Play",
+  "rateAppHint": "Откроет страницу приложения в Google Play",
+  "shareApp": "Поделиться Domiday",
+  "shareAppHint": "Отправит ссылку на Google Play",
+  "shareAppText": "Domiday: личный счётчик дней по странам и дневник путешествий. Офлайн, без аккаунта. {url}",
+  "@shareAppText": {"placeholders": {"url": {"type": "String"}}}
 }

@@ -1,4 +1,5 @@
-import 'package:domiday/main.dart' show appVersion, appVersionShort;
+import 'package:domiday/main.dart'
+    show FeedbackCard, appVersion, appVersionShort;
 import 'package:domiday/share.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -70,5 +71,34 @@ void main() {
     expect(share.opened, [
       'https://domiday.com/ru/?v=$appVersionShort#feedback',
     ]);
+  });
+
+  testWidgets('settings: rate opens Google Play, share sends the link', (
+    tester,
+  ) async {
+    final share = FakeShareService();
+    await launch(
+      tester,
+      MemoryRepository([fixture()]),
+      journal: false,
+      share: share,
+    );
+    await tester.tap(find.byTooltip('Настройки'));
+    await tester.pumpAndSettle();
+    await reveal(tester, find.byKey(const Key('rateApp')));
+    await tester.tap(find.byKey(const Key('rateApp')));
+    await tester.pumpAndSettle();
+    expect(share.opened, [FeedbackCard.playUrl]);
+    await reveal(tester, find.byKey(const Key('shareApp')));
+    await tester.tap(find.byKey(const Key('shareApp')));
+    await tester.pumpAndSettle();
+    expect(share.texts.single, contains(FeedbackCard.playUrl));
+    expect(share.texts.single, contains('Domiday'));
+    expect(share.title, 'Поделиться Domiday');
+    // Без меню «Поделиться» — сообщение, а не падение.
+    share.fail = true;
+    await tester.tap(find.byKey(const Key('shareApp')));
+    await tester.pumpAndSettle();
+    expect(find.byType(SnackBar), findsOneWidget);
   });
 }

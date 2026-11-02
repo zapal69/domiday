@@ -38,9 +38,9 @@ part 'map_page.dart';
 part 'year_review.dart';
 
 /// Код версии из pubspec (versionCode): поднимать вместе с версией.
-const appVersionCode = 46;
+const appVersionCode = 50;
 const appVersion = '$appVersionShort ($appVersionCode)';
-const appVersionShort = '1.0.3';
+const appVersionShort = '1.0.4';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -545,48 +545,46 @@ class _JournalPageState extends State<JournalPage> {
                                 ? null
                                 : IconButton(
                                     tooltip: l10n.clearSearch,
-                                    onPressed: () =>
-                                        setState(controller.clear),
+                                    onPressed: () => setState(controller.clear),
                                     icon: const Icon(Icons.close),
                                   ),
                           ),
                         ),
-                    optionsViewBuilder: (context, onSelected, options) =>
-                        Align(
-                          alignment: Alignment.topLeft,
-                          child: Material(
-                            elevation: 6,
-                            borderRadius: BorderRadius.circular(16),
-                            clipBehavior: Clip.antiAlias,
-                            child: SizedBox(
-                              width: (MediaQuery.sizeOf(context).width - 40)
-                                  .clamp(0.0, 680.0),
-                              child: ConstrainedBox(
-                                constraints: const BoxConstraints(
-                                  maxHeight: 280,
-                                ),
-                                child: ListView(
-                                  key: const Key('journalSuggestions'),
-                                  padding: EdgeInsets.zero,
-                                  shrinkWrap: true,
-                                  children: [
-                                    for (final c in options)
-                                      ListTile(
-                                        key: Key('journalSuggest-${c.code}'),
-                                        dense: true,
-                                        leading: CountryFlag(
-                                          code: c.code,
-                                          width: 24,
-                                        ),
-                                        title: Text(c.name(language)),
-                                        onTap: () => onSelected(c),
-                                      ),
-                                  ],
-                                ),
-                              ),
+                    optionsViewBuilder: (context, onSelected, options) => Align(
+                      alignment: Alignment.topLeft,
+                      child: Material(
+                        elevation: 6,
+                        borderRadius: BorderRadius.circular(16),
+                        clipBehavior: Clip.antiAlias,
+                        child: SizedBox(
+                          width: (MediaQuery.sizeOf(context).width - 40).clamp(
+                            0.0,
+                            680.0,
+                          ),
+                          child: ConstrainedBox(
+                            constraints: const BoxConstraints(maxHeight: 280),
+                            child: ListView(
+                              key: const Key('journalSuggestions'),
+                              padding: EdgeInsets.zero,
+                              shrinkWrap: true,
+                              children: [
+                                for (final c in options)
+                                  ListTile(
+                                    key: Key('journalSuggest-${c.code}'),
+                                    dense: true,
+                                    leading: CountryFlag(
+                                      code: c.code,
+                                      width: 24,
+                                    ),
+                                    title: Text(c.name(language)),
+                                    onTap: () => onSelected(c),
+                                  ),
+                              ],
                             ),
                           ),
                         ),
+                      ),
+                    ),
                   ),
                   const SizedBox(height: 12),
                   Wrap(
@@ -1424,7 +1422,10 @@ class _TripEditorState extends State<TripEditor> {
                       ),
                       if (_plan) ...[
                         const SizedBox(height: 8),
-                        Text(l10n.planHint, style: const TextStyle(fontSize: 14)),
+                        Text(
+                          l10n.planHint,
+                          style: const TextStyle(fontSize: 14),
+                        ),
                       ],
                       const SizedBox(height: 12),
                     ],
@@ -1630,6 +1631,11 @@ class FeedbackCard extends StatelessWidget {
 
   static const email = 'info@domiday.com';
 
+  /// Страница Domiday в Google Play: по https-адресу система сама
+  /// предложит приложение Play, если оно есть.
+  static const playUrl =
+      'https://play.google.com/store/apps/details?id=com.domiday.domiday';
+
   /// `https://domiday.com/ru/?v=1.0.2#feedback`: форма сама подставит версию.
   static String siteUrl(String languageCode) =>
       'https://domiday.com/${languageCode == 'ru' ? 'ru/' : ''}'
@@ -1648,9 +1654,8 @@ class FeedbackCard extends StatelessWidget {
     Future<void> open(String url) async {
       final ok = await share?.openUrl(url) ?? false;
       if (!ok && context.mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text(l10n.aboutOpenFailed(url))));
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text(l10n.aboutOpenFailed(url))));
       }
     }
 
@@ -1682,6 +1687,50 @@ class FeedbackCard extends StatelessWidget {
                 trailing: const Icon(Icons.open_in_new_rounded, size: 18),
                 onTap: () =>
                     open(mailUrl(l10n.feedbackMailSubject(appVersionShort))),
+              ),
+            ],
+          ),
+        ),
+        // 1.0.4: «Оценить» и «Поделиться» по предложению тестировщиков
+        // закрытого теста. Оба действия уходят в другие приложения через
+        // систему, как сайт и почта выше; разрешений и сети не нужно.
+        const SizedBox(height: 20),
+        Text(l10n.playTitle, style: Theme.of(context).textTheme.titleLarge),
+        const SizedBox(height: 8),
+        Text(l10n.playBody, style: muted),
+        const SizedBox(height: 12),
+        Card(
+          clipBehavior: Clip.antiAlias,
+          child: Column(
+            children: [
+              ListTile(
+                key: const Key('rateApp'),
+                leading: const Icon(Icons.star_outline_rounded),
+                title: Text(l10n.rateApp),
+                subtitle: Text(l10n.rateAppHint),
+                trailing: const Icon(Icons.open_in_new_rounded, size: 18),
+                onTap: () => open(playUrl),
+              ),
+              const Divider(height: 1),
+              ListTile(
+                key: const Key('shareApp'),
+                leading: const Icon(Icons.share_outlined),
+                title: Text(l10n.shareApp),
+                subtitle: Text(l10n.shareAppHint),
+                trailing: const Icon(Icons.open_in_new_rounded, size: 18),
+                onTap: () async {
+                  final ok =
+                      await share?.shareText(
+                        l10n.shareAppText(playUrl),
+                        l10n.shareApp,
+                      ) ??
+                      false;
+                  if (!ok && context.mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(content: Text(l10n.aboutOpenFailed(playUrl))),
+                    );
+                  }
+                },
               ),
             ],
           ),
@@ -1742,7 +1791,10 @@ class AboutPage extends StatelessWidget {
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          Text('Domiday', style: display(size: 28, height: 1.1)),
+                          Text(
+                            'Domiday',
+                            style: display(size: 28, height: 1.1),
+                          ),
                           Text(
                             l10n.aboutVersion(appVersion),
                             key: const Key('aboutVersion'),
@@ -1789,9 +1841,21 @@ class AboutPage extends StatelessWidget {
                 ),
                 _section(context, l10n.aboutDetectTitle, l10n.aboutDetectBody),
                 _section(context, l10n.aboutDeviceTitle, l10n.aboutDeviceBody),
-                _section(context, l10n.aboutUnknownTitle, l10n.aboutUnknownBody),
-                _section(context, l10n.aboutCountingTitle, l10n.aboutCountingBody),
-                _section(context, l10n.aboutNotVisaTitle, l10n.aboutNotVisaBody),
+                _section(
+                  context,
+                  l10n.aboutUnknownTitle,
+                  l10n.aboutUnknownBody,
+                ),
+                _section(
+                  context,
+                  l10n.aboutCountingTitle,
+                  l10n.aboutCountingBody,
+                ),
+                _section(
+                  context,
+                  l10n.aboutNotVisaTitle,
+                  l10n.aboutNotVisaBody,
+                ),
                 Text(
                   l10n.aboutContactTitle,
                   style: Theme.of(context).textTheme.titleLarge,
@@ -1811,7 +1875,11 @@ class AboutPage extends StatelessWidget {
                 const SizedBox(height: 8),
                 Text(l10n.aboutContactNote, style: muted),
                 const SizedBox(height: 28),
-                _section(context, l10n.aboutCreditsTitle, l10n.aboutCreditsBody),
+                _section(
+                  context,
+                  l10n.aboutCreditsTitle,
+                  l10n.aboutCreditsBody,
+                ),
                 Text(l10n.aboutCopyright, style: muted),
                 const SizedBox(height: 4),
                 Text(l10n.aboutNoWarranty, style: muted),

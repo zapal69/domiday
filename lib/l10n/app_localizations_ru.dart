@@ -1850,4 +1850,28 @@ class AppLocalizationsRu extends AppLocalizations {
   String feedbackMailSubject(String version) {
     return 'Domiday $version: замечание';
   }
+
+  @override
+  String get playTitle => 'Нравится Domiday?';
+
+  @override
+  String get playBody =>
+      'Оценка помогает другим путешественникам найти приложение, а «Поделиться» отправляет ссылку на Google Play. Оба действия открывают другое приложение; сам Domiday в сеть не ходит.';
+
+  @override
+  String get rateApp => 'Оценить в Google Play';
+
+  @override
+  String get rateAppHint => 'Откроет страницу приложения в Google Play';
+
+  @override
+  String get shareApp => 'Поделиться Domiday';
+
+  @override
+  String get shareAppHint => 'Отправит ссылку на Google Play';
+
+  @override
+  String shareAppText(String url) {
+    return 'Domiday: личный счётчик дней по странам и дневник путешествий. Офлайн, без аккаунта. $url';
+  }
 }
