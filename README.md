@@ -5,7 +5,7 @@ spent in each country. Your trips appear on a year calendar and on a rotating
 globe. Everything stays on your phone: **no account, no server, no internet
 access, no ads, no analytics.**
 
-I worked as a software developer in the UK 25 years ago and then
+I worked as a software developer in the UK long ago and then
 spent twenty years doing other things. I built Domiday for my own use,
 together with an AI that wrote the code while I set the tasks, argued and
 tested every version on my phone. It is free, has no ads, and the source is
