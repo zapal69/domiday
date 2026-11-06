@@ -1970,6 +1970,42 @@ abstract class AppLocalizations {
   /// **'The file is damaged or contains invalid records. The current history is untouched.'**
   String get backupErrorCorrupt;
 
+  /// No description provided for @consentLocationTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Location for country detection'**
+  String get consentLocationTitle;
+
+  /// No description provided for @consentLocationBody.
+  ///
+  /// In en, this message translates to:
+  /// **'Domiday uses approximate location data to suggest the country you are in: when you tap “Check” and when the app opens (this can be turned off in Settings). The location is matched on this phone against borders stored in the app. Coordinates are not saved and are never sent anywhere; the app has no internet access.'**
+  String get consentLocationBody;
+
+  /// No description provided for @consentBackgroundTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Location in the background'**
+  String get consentBackgroundTitle;
+
+  /// No description provided for @consentBackgroundBody.
+  ///
+  /// In en, this message translates to:
+  /// **'Domiday collects approximate location data to enable country detection and a notification when the country looks different, even when the app is closed or not in use. The location is matched on this phone against borders stored in the app. Coordinates are not saved and are never sent anywhere; the app has no internet access.'**
+  String get consentBackgroundBody;
+
+  /// No description provided for @consentAccept.
+  ///
+  /// In en, this message translates to:
+  /// **'Accept'**
+  String get consentAccept;
+
+  /// No description provided for @consentDecline.
+  ///
+  /// In en, this message translates to:
+  /// **'No thanks'**
+  String get consentDecline;
+
   /// No description provided for @backgroundTitle.
   ///
   /// In en, this message translates to:

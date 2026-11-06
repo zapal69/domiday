@@ -1189,6 +1189,26 @@ class AppLocalizationsEn extends AppLocalizations {
       'The file is damaged or contains invalid records. The current history is untouched.';
 
   @override
+  String get consentLocationTitle => 'Location for country detection';
+
+  @override
+  String get consentLocationBody =>
+      'Domiday uses approximate location data to suggest the country you are in: when you tap “Check” and when the app opens (this can be turned off in Settings). The location is matched on this phone against borders stored in the app. Coordinates are not saved and are never sent anywhere; the app has no internet access.';
+
+  @override
+  String get consentBackgroundTitle => 'Location in the background';
+
+  @override
+  String get consentBackgroundBody =>
+      'Domiday collects approximate location data to enable country detection and a notification when the country looks different, even when the app is closed or not in use. The location is matched on this phone against borders stored in the app. Coordinates are not saved and are never sent anywhere; the app has no internet access.';
+
+  @override
+  String get consentAccept => 'Accept';
+
+  @override
+  String get consentDecline => 'No thanks';
+
+  @override
   String get backgroundTitle => 'Check in the background';
 
   @override

@@ -32,6 +32,13 @@ Future<void> tapVisible(WidgetTester tester, String key) async {
   await tester.pumpAndSettle();
 }
 
+/// Кнопка в диалоге: без прокрутки страницы под ним ([tapVisible] двигал
+/// бы список главного экрана).
+Future<void> tapDialog(WidgetTester tester, String key) async {
+  await tester.tap(find.byKey(Key(key)));
+  await tester.pumpAndSettle();
+}
+
 MemoryRepository dashboardFixture() =>
     MemoryRepository([
         trip('2026-01-01', '2026-01-12', id: 'home', country: 'Россия'),

@@ -64,11 +64,13 @@ Android backup and device transfer are disabled for the journal
 
 ## Download
 
-- **APK:** [Releases](../../releases) or [domiday.com](https://domiday.com).
-  Android 7.0+, 64-bit ARM (arm64-v8a) only.
-- **Google Play:** in closed testing. Want to help? Sign up at
-  [domiday.com/#testers](https://domiday.com/#testers). Google requires at
-  least 12 testers for 14 days before an app can be published.
+- **Google Play:**
+  [play.google.com/store/apps/details?id=com.domiday.domiday](https://play.google.com/store/apps/details?id=com.domiday.domiday).
+  Updates arrive on their own.
+- **APK:** [Releases](../../releases) or [domiday.com](https://domiday.com),
+  for phones without Google services. Android 7.0+, 64-bit ARM (arm64-v8a)
+  only. The Play version and the APK are signed with the same key, so one
+  installs over the other.
 
 ## Building
 

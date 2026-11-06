@@ -10,6 +10,7 @@ import 'background.dart';
 import 'backup.dart';
 import 'timeline_import.dart';
 import 'borders.dart';
+import 'consent.dart';
 import 'countries.dart';
 import 'country_field.dart';
 import 'detect.dart';
@@ -38,9 +39,9 @@ part 'map_page.dart';
 part 'year_review.dart';
 
 /// Код версии из pubspec (versionCode): поднимать вместе с версией.
-const appVersionCode = 51;
+const appVersionCode = 52;
 const appVersion = '$appVersionShort ($appVersionCode)';
-const appVersionShort = '1.0.5';
+const appVersionShort = '1.0.6';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();

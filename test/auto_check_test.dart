@@ -4,7 +4,7 @@ import 'package:domiday/snapshot.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-import 'dashboard_test.dart' show dashboardFixture, tapVisible;
+import 'dashboard_test.dart' show dashboardFixture, tapDialog, tapVisible;
 import 'widget_test.dart' show launch, reveal, MemoryRepository, fixture;
 
 Observed at(double lat, double lon) => Observed(
@@ -163,8 +163,9 @@ void main() {
       );
       expect(source.calls, 1);
       expect(find.byKey(const Key('candidateBanner')), findsNothing);
-      // Кнопка по-прежнему работает вручную.
+      // Кнопка по-прежнему работает вручную: сначала окно согласия.
       await tapVisible(tester, 'detectNow');
+      await tapDialog(tester, 'consentAccept');
       expect(find.byKey(const Key('detectionPage')), findsOneWidget);
     },
   );
@@ -192,6 +193,11 @@ void main() {
       // «Включить» — обычный запрос разрешения; владелец разрешил.
       source.result = at(41.7151, 44.8271); // Тбилиси
       await tapVisible(tester, 'detectEnable');
+      // До системного запроса — объяснение; запроса ещё не было.
+      expect(find.byKey(const Key('consentLocation')), findsOneWidget);
+      expect(source.calls, 1);
+      await tapDialog(tester, 'consentAccept');
+      expect(settings.settings.locationConsent, isTrue);
       expect(source.calls, 2);
       expect(source.silentCalls, 1);
       expect(source.settingsOpened, isEmpty);
@@ -220,6 +226,7 @@ void main() {
         now: () => now,
       );
       await tapVisible(tester, 'detectEnable');
+      await tapDialog(tester, 'consentAccept');
       // Android больше не спрашивает — настройки приложения.
       expect(source.settingsOpened, [false]);
       expect(find.byKey(const Key('detectOff')), findsOneWidget);
@@ -248,6 +255,7 @@ void main() {
         findsOneWidget,
       );
       await tapVisible(tester, 'detectEnable');
+      await tapDialog(tester, 'consentAccept');
       expect(off.settingsOpened, [true]);
       expect(off.calls, 1);
       // «Не нужно» — автопроверка выключена, карточки нет, кнопка на месте.

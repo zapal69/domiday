@@ -100,6 +100,11 @@ class AppSettings {
   /// делает проверку обязательной независимо от интервала.
   final String? lastAutoCheckKey;
 
+  /// Владелец прочитал, как используется местоположение, и нажал
+  /// «Принять»: без этого приложение не вызывает системный запрос
+  /// разрешения (требование Google Play о раскрытии и согласии).
+  final bool locationConsent;
+
   /// Фоновая проверка (WorkManager) — только по явному включению.
   final bool backgroundDetect;
 
@@ -136,6 +141,7 @@ class AppSettings {
     this.autoDetect = true,
     this.lastAutoCheck,
     this.lastAutoCheckKey,
+    this.locationConsent = false,
     this.backgroundDetect = false,
     this.backgroundRequested = false,
     this.notifiedCode,
@@ -175,6 +181,7 @@ class AppSettings {
     bool? autoDetect,
     DateTime? lastAutoCheck,
     String? lastAutoCheckKey,
+    bool? locationConsent,
     bool? backgroundDetect,
     bool? backgroundRequested,
     String? notifiedCode,
@@ -195,6 +202,7 @@ class AppSettings {
     autoDetect: autoDetect ?? this.autoDetect,
     lastAutoCheck: lastAutoCheck ?? this.lastAutoCheck,
     lastAutoCheckKey: lastAutoCheckKey ?? this.lastAutoCheckKey,
+    locationConsent: locationConsent ?? this.locationConsent,
     backgroundDetect: backgroundDetect ?? this.backgroundDetect,
     backgroundRequested: backgroundRequested ?? this.backgroundRequested,
     notifiedCode: clearNotified ? null : (notifiedCode ?? this.notifiedCode),
@@ -219,6 +227,7 @@ class AppSettings {
     'autoDetect': autoDetect,
     'lastAutoCheck': lastAutoCheck?.toUtc().toIso8601String(),
     'lastAutoCheckKey': lastAutoCheckKey,
+    'locationConsent': locationConsent,
     'backgroundDetect': backgroundDetect,
     'backgroundRequested': backgroundRequested,
     'notifiedCode': notifiedCode,
@@ -260,6 +269,7 @@ class AppSettings {
       lastAutoCheckKey: json['lastAutoCheckKey'] is String
           ? json['lastAutoCheckKey'] as String
           : null,
+      locationConsent: json['locationConsent'] == true,
       backgroundDetect: json['backgroundDetect'] == true,
       backgroundRequested: json['backgroundRequested'] == true,
       notifiedCode: json['notifiedCode'] is String
@@ -389,6 +399,13 @@ class SettingsController extends ChangeNotifier {
 
   Future<void> setAutoDetect(bool enabled) async {
     final next = _settings.copyWith(autoDetect: enabled);
+    await repository.save(next);
+    _settings = next;
+    notifyListeners();
+  }
+
+  Future<void> setLocationConsent(bool given) async {
+    final next = _settings.copyWith(locationConsent: given);
     await repository.save(next);
     _settings = next;
     notifyListeners();

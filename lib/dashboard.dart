@@ -484,6 +484,11 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   Future<void> _detect() async {
     final location = widget.location;
     if (location == null || _detecting) return;
+    // Сначала объяснение и согласие, потом системный запрос разрешения.
+    if (!await ensureLocationConsent(context, SettingsController.of(context))) {
+      return;
+    }
+    if (!mounted) return;
     setState(() => _detecting = true);
     String? message;
     try {
@@ -523,6 +528,10 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   Future<void> _enableDetect() async {
     final location = widget.location;
     if (location == null || _detecting) return;
+    if (!await ensureLocationConsent(context, SettingsController.of(context))) {
+      return;
+    }
+    if (!mounted) return;
     if (_autoOutcome == DetectOutcome.serviceOff) {
       _recheckOnResume = true;
       await location.openSettings(service: true);
@@ -3170,6 +3179,10 @@ class _BackgroundSettingState extends State<_BackgroundSetting>
         await settings.setBackgroundDetect(false);
         return;
       }
+      // Раскрытие и согласие — до любых системных запросов. Показывается
+      // при каждом включении: фон должен быть осознанным выбором.
+      if (!await showLocationDisclosure(context, background: true)) return;
+      await settings.setLocationConsent(true);
       final state = await service.requestPermissions();
       if (!mounted) return;
       if (state != BackgroundPermissionState.locationNotAlways) {

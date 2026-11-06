@@ -49,7 +49,7 @@ void main() {
     (tester) async {
       final repo = dashboardFixture();
       final settings = MemorySettingsRepository(
-        const AppSettings(autoDetect: false),
+        const AppSettings(autoDetect: false, locationConsent: true),
       );
       final source = FakeLocationSource(yerevan);
       await launch(
@@ -90,7 +90,7 @@ void main() {
   ) async {
     final repo = dashboardFixture();
     final settings = MemorySettingsRepository(
-      const AppSettings(autoDetect: false),
+      const AppSettings(autoDetect: false, locationConsent: true),
     );
     final source = FakeLocationSource(tbilisi);
     await launch(
@@ -132,7 +132,7 @@ void main() {
   ) async {
     final repo = dashboardFixture();
     final settings = MemorySettingsRepository(
-      const AppSettings(autoDetect: false),
+      const AppSettings(autoDetect: false, locationConsent: true),
     );
     final source = FakeLocationSource(yerevan);
     await launch(
@@ -175,7 +175,7 @@ void main() {
   ) async {
     final repo = dashboardFixture();
     final settings = MemorySettingsRepository(
-      const AppSettings(autoDetect: false),
+      const AppSettings(autoDetect: false, locationConsent: true),
     );
     await launch(
       tester,
@@ -203,7 +203,9 @@ void main() {
       tester,
       repo,
       journal: false,
-      settings: MemorySettingsRepository(const AppSettings(autoDetect: false)),
+      settings: MemorySettingsRepository(
+        const AppSettings(autoDetect: false, locationConsent: true),
+      ),
       location: FakeLocationSource(sarpi),
     );
     await tapVisible(tester, 'detectNow');

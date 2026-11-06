@@ -362,6 +362,9 @@ class FakeBackgroundService implements BackgroundService {
   int scheduled = 0;
   int cancelled = 0;
   int settingsOpened = 0;
+
+  /// Сколько раз вызывались системные запросы разрешений.
+  int requested = 0;
   int ranNow = 0;
   final List<(String, String)> tested = [];
   bool? battery = true;
@@ -376,7 +379,11 @@ class FakeBackgroundService implements BackgroundService {
   @override
   Future<bool?> batteryUnrestricted() async => battery;
   @override
-  Future<BackgroundPermissionState> requestPermissions() async => permissions;
+  Future<BackgroundPermissionState> requestPermissions() async {
+    requested++;
+    return permissions;
+  }
+
   @override
   Future<BackgroundPermissionState> checkPermissions() async => permissions;
   @override

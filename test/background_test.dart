@@ -226,6 +226,8 @@ void main() {
     expect(find.text('Фоновая проверка выключена'), findsOneWidget);
     await tester.tap(find.byKey(const Key('backgroundSetting')));
     await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('consentAccept')));
+    await tester.pumpAndSettle();
     expect(service.scheduled, 1);
     expect(settings.settings.backgroundDetect, isTrue);
     expect(find.text('Фоновая проверка включена'), findsOneWidget);
@@ -256,6 +258,8 @@ void main() {
       await tester.pumpAndSettle();
       await reveal(tester, find.byKey(const Key('backgroundSetting')));
       await tester.tap(find.byKey(const Key('backgroundSetting')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('consentAccept')));
       await tester.pumpAndSettle();
       expect(find.textContaining('Разрешить всегда'), findsWidgets);
       await tester.tap(find.text('Открыть настройки приложения'));
@@ -421,6 +425,8 @@ void main() {
     await reveal(tester, find.byKey(const Key('backgroundSetting')));
     await tester.tap(find.byKey(const Key('backgroundSetting')));
     await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('consentAccept')));
+    await tester.pumpAndSettle();
     expect(service.scheduled, 1);
     expect(settings.settings.backgroundDetect, isTrue);
     await reveal(tester, find.byKey(const Key('notificationsOff')));
@@ -481,7 +487,6 @@ void main() {
 
 /// checkPermissions → уведомлений нет; requestPermissions → всё выдано.
 class _RequestingService extends FakeBackgroundService {
-  int requested = 0;
   _RequestingService() : super(BackgroundPermissionState.notificationsOff);
   @override
   Future<BackgroundPermissionState> requestPermissions() async {
